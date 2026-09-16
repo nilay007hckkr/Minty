@@ -1,0 +1,62 @@
+[
+  {
+    "query": "what is the daily ATM withdrawal limit",
+    "expect": "answerable",
+    "keywords": ["1,000", "2,500"]
+  },
+  {
+    "query": "are there any fees for using an out-of-network ATM",
+    "expect": "answerable",
+    "keywords": ["3.00", "$3"]
+  },
+  {
+    "query": "how can I avoid the monthly maintenance fee on my checking account",
+    "expect": "answerable",
+    "keywords": ["1,500", "$12"]
+  },
+  {
+    "query": "what is the cut-off time for sending a domestic wire transfer",
+    "expect": "answerable",
+    "keywords": ["4:00", "PM"]
+  },
+  {
+    "query": "how many fee-free withdrawals can I make from my savings account",
+    "expect": "answerable",
+    "keywords": ["6", "$5"]
+  },
+  {
+    "query": "how do I open a new checking account",
+    "expect": "fallback",
+    "keywords": []
+  },
+  {
+    "query": "can I request a credit limit increase",
+    "expect": "answerable",
+    "keywords": ["Card Settings", "business days", "credit check"]
+  },
+  {
+    "query": "does the cashback rewards card charge foreign transaction fees",
+    "expect": "answerable",
+    "keywords": ["does not charge", "no foreign"]
+  },
+  {
+    "query": "what is your favorite color",
+    "expect": "fallback",
+    "keywords": []
+  },
+  {
+    "query": "can you write me a poem about the ocean",
+    "expect": "fallback",
+    "keywords": []
+  },
+  {
+    "query": "what is your current mortgage refinance rate",
+    "expect": "fallback",
+    "keywords": []
+  },
+  {
+    "query": "do you offer auto loans",
+    "expect": "fallback",
+    "keywords": []
+  }
+]

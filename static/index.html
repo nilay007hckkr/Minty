@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Minty - Banking Assistant</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 40px auto; background: #f4f6f8; }
+  h1 { font-size: 1.3rem; color: #1a2b4c; }
+  #chat { background: white; border-radius: 8px; padding: 16px; height: 450px; overflow-y: auto; border: 1px solid #dde3ea; }
+  .msg { margin: 10px 0; padding: 10px 14px; border-radius: 10px; max-width: 80%; line-height: 1.4; }
+  .user { background: #1a2b4c; color: white; margin-left: auto; }
+  .assistant { background: #eef1f5; color: #1a2b4c; }
+  .sources { font-size: 0.75rem; color: #6b7684; margin-top: 6px; }
+  #input-row { display: flex; gap: 8px; margin-top: 12px; }
+  #query { flex: 1; padding: 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 1rem; }
+  #send { padding: 10px 18px; border-radius: 6px; border: none; background: #1a2b4c; color: white; cursor: pointer; }
+  #send:disabled { opacity: 0.5; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<h1>Minty — Banking Information Assistant</h1>
+<div id="chat"></div>
+<div id="input-row">
+  <input id="query" type="text" placeholder="Ask about fees, limits, accounts..." />
+  <button id="send">Send</button>
+</div>
+
+<script>
+  const sessionId = crypto.randomUUID();
+  const chatEl = document.getElementById("chat");
+  const queryEl = document.getElementById("query");
+  const sendBtn = document.getElementById("send");
+
+  function addMessage(role, text, sources = []) {
+    const div = document.createElement("div");
+    div.className = "msg " + role;
+    div.textContent = text;
+    if (sources.length > 0) {
+      const src = document.createElement("div");
+      src.className = "sources";
+      src.textContent = "Sources: " + sources.join(", ");
+      div.appendChild(src);
+    }
+    chatEl.appendChild(div);
+    chatEl.scrollTop = chatEl.scrollHeight;
+  }
+
+  async function sendMessage() {
+    const query = queryEl.value.trim();
+    if (!query) return;
+
+    addMessage("user", query);
+    queryEl.value = "";
+    sendBtn.disabled = true;
+
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ query, session_id: sessionId }),
+      });
+
+      if (!res.ok) {
+        addMessage("assistant", `Error: server responded with ${res.status}`);
+        return;
+      }
+
+      const data = await res.json();
+      addMessage("assistant", data.answer, data.sources || []);
+    } catch (err) {
+      addMessage("assistant", "Error: could not reach the server.");
+    } finally {
+      sendBtn.disabled = false;
+    }
+  }
+
+  sendBtn.addEventListener("click", sendMessage);
+  queryEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendMessage();
+  });
+</script>
+
+</body>
+</html>
