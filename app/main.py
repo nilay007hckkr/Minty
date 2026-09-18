@@ -49,7 +49,15 @@ def chat(request: ChatRequest):
         "refinement_count": 0,
     }
     try:
-        result = app_graph.invoke(initial_state, config={"recursion_limit": 15})
+        result = app_graph.invoke(
+            initial_state,
+            config={
+                "recursion_limit": 15,
+                "run_name": f"chat-{request.session_id}",
+                "metadata": {"session_id": request.session_id, "query": request.query},
+                "tags": ["chat-endpoint"],
+            },
+        )
     except Exception as e:
         logger.error(f"Graph invocation failed: {e}")
         raise HTTPException(
