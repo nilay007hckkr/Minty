@@ -92,7 +92,7 @@ Retry cap on the refine loop: 2 attempts before falling back, enforced both by a
 
 | Layer | Choice | Why |
 |---|---|---|
-| Orchestration | LangGraph | Only framework here that natively supports the classify→retrieve→grade→**loop back**→generate→validate cycle; a linear chain can't express the refine loop at all. |
+| Orchestration | LangGraph | Explicit stateful orchestration for the classify→retrieve→grade→**loop back**→generate→validate workflow, including conditional routing and bounded retry loops. |
 | Generation LLM | Groq (`openai/gpt-oss-120b`) | Fast inference, generous free tier for a portfolio-scale demo. |
 | Utility LLM | Groq (`openai/gpt-oss-20b`) | Cheaper/faster model for classify, grade, and refine — these are cheap decisions that don't need the bigger model. |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | Runs locally, no API cost or rate limit — important since embeddings get called on every query and every semantic-cache check. |
