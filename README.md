@@ -19,6 +19,7 @@ Every one of those steps exists because a simpler version of this system was tes
 ## Table of contents
 
 - [Why this isn't naive RAG](#why-this-isnt-naive-rag)
+- [Baseline comparison](#baseline-comparison)
 - [Architecture](#architecture)
 - [Tech stack](#tech-stack)
 - [Features](#features)
@@ -39,6 +40,20 @@ A plain RAG chain is: embed query → vector search → stuff top-k into a promp
 - It has no check on the generated answer itself — an LLM can (and did, during development of this project) invent a plausible-sounding but unsupported detail, like expanding an abbreviation the source never defined.
 
 This project's graph adds a corrective step for each of those failure modes, and each one was validated against a real, reproduced failure — not added speculatively.
+
+### Baseline comparison
+
+Rather than just claim this architecture is better than naive RAG, I built two stripped-down versions of the same graph — reusing the exact same node functions, just fewer of them — and ran the identical 12-question eval set against all three:
+
+| System | Score | What actually happens |
+|---|---|---|
+| Naive RAG (retrieve → generate) | 7/12 | Confidently answers out-of-scope questions (e.g. "what's your favorite color") by generating from whatever's nearest in vector space and citing it as a source — has no concept of "nothing here is relevant." |
+| Reranked RAG (+ cross-encoder) | 7/12 | Same scope failures as naive RAG — reranking improves *which* documents get cited (e.g. narrows 3 sources down to 2 correct ones on one query) but doesn't add a scope check, so it still can't refuse an off-topic question. |
+| Minty (full pipeline) | 12/12 | Classification rejects out-of-scope queries before retrieval even runs; grading filters irrelevant documents; validation catches and declines weakly-grounded generations. |
+
+One caveat, in the interest of not overstating this: one of the 5 gaps above (`"how do I open a new checking account"`) reflects Minty's groundedness validator making a cautious call, not naive RAG being clearly wrong — it generated from genuinely relevant content, but couldn't independently verify its own output the way Minty's validation step does. The other 4 gaps are unambiguous: naive RAG answering "what's your favorite color" by citing a banking FAQ file as its source.
+
+Reproduce this yourself: `uv run python -m tests.run_comparison_eval` (runs all three graphs directly, no server needed — makes real Groq calls, roughly 3x the cost of the standard eval since each question runs through all three pipelines).
 
 ## Architecture
 
@@ -115,32 +130,35 @@ Retry cap on the refine loop: 2 attempts before falling back, enforced both by a
 - [x] Dockerized (FastAPI + Redis via Compose)
 - [x] pytest suite with mocked LLM calls (fast, free, CI-safe) + a separate live eval harness (real API calls, run manually)
 - [x] GitHub Actions CI (tests + Docker build on every push)
+- [x] Baseline comparison against naive and reranked-only RAG variants, using the same eval set
 
 ## Project structure
 
 ```
 app/
-  main.py          FastAPI app: /chat, /health, rate limiting, semantic cache, trace metadata
-  state.py         GraphState TypedDict shared across all graph nodes
-  prompts.py       All prompt templates (classify, grade, refine, generate, validate)
-  nodes.py         Node implementations + per-node error handling
-  graph.py         StateGraph wiring: nodes, edges, conditional routing
-  vectorstore.py   Embeddings + Chroma setup, idempotent indexing
-  ingestion.py     Markdown loading + two-stage chunking
-  rerank.py        Cross-encoder reranking
-  history.py       Redis chat history (RPUSH / LRANGE)
-  cache.py         Redis semantic cache (embedding similarity, shared across sessions)
-  rate_limit.py    Redis fixed-window rate limiting
-  redis_client.py  Shared Redis connection (host/port from env, for Docker networking)
+  main.py               FastAPI app: /chat, /health, rate limiting, semantic cache, trace metadata
+  state.py              GraphState TypedDict shared across all graph nodes
+  prompts.py             All prompt templates (classify, grade, refine, generate, validate)
+  nodes.py               Node implementations + per-node error handling
+  graph.py                StateGraph wiring: nodes, edges, conditional routing
+  comparison_graphs.py    Naive and reranked-only graph variants for baseline comparison
+  vectorstore.py         Embeddings + Chroma setup, idempotent indexing
+  ingestion.py            Markdown loading + two-stage chunking
+  rerank.py               Cross-encoder reranking
+  history.py              Redis chat history (RPUSH / LRANGE)
+  cache.py                Redis semantic cache (embedding similarity, shared across sessions)
+  rate_limit.py           Redis fixed-window rate limiting
+  redis_client.py         Shared Redis connection (host/port from env, for Docker networking)
 static/
-  index.html       Minimal chat UI
-sample_data/       Sample banking FAQ content (ATM fees, accounts, cards, wire transfers)
+  index.html              Chat UI
+sample_data/               Sample banking FAQ content (ATM fees, accounts, cards, wire transfers)
 tests/
-  test_graph.py    Mocked-LLM unit tests (no network calls)
-  eval_set.json    Hand-built eval questions + expected outcomes
-  run_eval.py      Live eval harness (hits the real API, real Groq calls)
+  test_graph.py            Mocked-LLM unit tests (no network calls)
+  eval_set.json            Hand-built eval questions + expected outcomes
+  run_eval.py              Live eval harness against /chat (real Groq calls)
+  run_comparison_eval.py   Runs eval_set.json directly against naive/reranked/full graphs
 .github/workflows/
-  ci.yml           pytest + Docker build on push/PR
+  ci.yml                  pytest + Docker build on push/PR
 Dockerfile
 docker-compose.yml
 ```
@@ -201,7 +219,7 @@ This isn't cosmetic — it directly replaces a debugging workflow this project r
 
 ## Evaluation
 
-**12/12** on a hand-built 12-question set covering all four sample FAQ topics plus four deliberately out-of-scope queries.
+**12/12** on a hand-built 12-question set covering all four sample FAQ topics plus four deliberately out-of-scope queries. See [Baseline comparison](#baseline-comparison) above for how this compares against naive and reranked-only RAG on the same questions.
 
 Two things worth calling out honestly rather than just quoting the number:
 
@@ -212,16 +230,19 @@ Run it yourself: `uv run python tests/run_eval.py` (requires the server running 
 
 ## Known limitations
 
+- **A 12-question eval set is directionally useful but not statistically rigorous.** It's enough to catch real regressions and demonstrate the corrective-RAG mechanisms working end-to-end, but not enough to make strong quantitative claims (e.g. proper Recall@K/NDCG would need a much larger, labeled query set — a reasonable next step, not attempted here given project scope).
 - **Semantic cache is shared, not session-scoped.** Deliberate: the content is universal factual information (fee schedules, hours), so caching across all users maximizes hit rate. This would be the wrong design the moment the system needed to answer anything account-specific or personalized.
 - **`langchain-community` is being sunset** upstream (loaders are migrating to standalone integration packages). Seen, understood, and deliberately not migrated for a project at this scale.
 - **Generation/validation can be sensitive to unusual query phrasing**, even when the underlying content exists — a vaguely-phrased question can occasionally trip the groundedness validator into declining an answer a more precisely-phrased version would pass.
 - **Reranking trims retrieval to top-3 before grading**, which improves precision but can occasionally cost recall on borderline queries where the correct document doesn't survive the cut from 6 down to 3.
-- **LangSmith env var naming caused a real, reproducible bug**: an outdated `LANGCHAIN_*` variable set produced silent `403 Forbidden` errors on trace uploads (app kept working, tracing silently failed); switching to the current `LANGSMITH_*` names fixed uploads, but briefly caused the container to hang on a slow cold start immediately after the change, which looked like a hard failure before a longer wait resolved it. Root-caused with container log inspection rather than assumed fixed or assumed broken — worth designing tracing setup with a startup timeout/healthcheck if this were headed to real production.
+- **LangSmith env var naming caused a real, reproducible bug**: an outdated `LANGCHAIN_*` variable set produced silent `403 Forbidden` errors on trace uploads (app kept working, tracing silently failed); switching to the current `LANGSMITH_*` names fixed uploads, but briefly caused the container to hang on a slow cold start immediately after the change, which looked like a hard failure before a longer wait resolved it. Root-caused with container log inspection rather than assumed fixed or assumed broken.
 
 ## Roadmap
 
+- [ ] Expand the eval set (30-50 queries across in-domain/ambiguous/adversarial/unanswerable categories) with proper retrieval metrics (Recall@K, MRR) — would need labeled ground-truth relevance per query, not attempted yet given project scope
 - [ ] GitHub Actions step to also run the live eval harness on a schedule (not every push, given API cost)
 - [ ] Session-aware semantic caching if the assistant ever needs to handle account-specific queries
+- [ ] Considered typed-decision models (e.g. TypeSafe AI's System One Models) as a potential fit for the classify/grade nodes — not integrated given their very recent (Sept 2026) release and lack of production track record
 - [ ] LangSmith-based automated evaluators (currently the eval harness is a standalone script; LangSmith supports running evals as part of the traced pipeline itself)
 
 ![footer](https://capsule-render.vercel.app/api?type=waving&color=timeGradient&height=100&section=footer)
