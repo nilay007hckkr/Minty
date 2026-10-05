@@ -12,3 +12,4 @@ data/
 faiss_index/
 *.faiss
 *.pkl
+PROGRESS.txt

@@ -1,14 +1,14 @@
 from langgraph.graph import StateGraph, END
 
 from app.state import GraphState
-from app.nodes import retrieve_node, rerank_node, generate_node
+from app.nodes import retrieve_node, rerank_node, generate_node, source_of
 
 
 def attach_sources_node(state: GraphState) -> dict:
     """Mirrors grade_node's source-extraction, without the relevance filtering
     these comparison graphs deliberately skip."""
     docs = state.get("documents", [])
-    sources = list(set([doc.metadata.get("source", "sample_data") for doc in docs]))
+    sources = sorted(set(source_of(doc) for doc in docs))
     return {"sources": sources}
 
 

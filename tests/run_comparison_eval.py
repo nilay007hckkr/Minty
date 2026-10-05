@@ -1,5 +1,6 @@
 import json
 import re
+import unicodedata
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -12,6 +13,16 @@ EVAL_SET_PATH = "tests/eval_set.json"
 
 def strip_markdown(text: str) -> str:
     return re.sub(r"\*\*|\*|_", "", text)
+
+
+def normalize(text: str) -> str:
+    # gpt-oss emits typographic characters (U+202F narrow no-break space in
+    # "4:00 PM", U+2011 non-breaking hyphen in "fee-free") that would make
+    # plain keyword matching fail on correct answers.
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"[‐-―−]", "-", text)
+    text = re.sub(r"\s+", " ", text)
+    return strip_markdown(text).lower()
 
 
 def run_graph(graph, query: str) -> dict:
@@ -30,7 +41,7 @@ def run_graph(graph, query: str) -> dict:
 def score_case(case: dict, result: dict) -> tuple[bool, str]:
     answer = result.get("answer", "")
     sources = result.get("sources", [])
-    clean_answer = strip_markdown(answer)
+    clean_answer = normalize(answer)
 
     if case["expect"] == "fallback":
         passed = len(sources) == 0
@@ -41,7 +52,7 @@ def score_case(case: dict, result: dict) -> tuple[bool, str]:
         )
     else:
         has_sources = len(sources) > 0
-        keyword_hit = any(kw.lower() in clean_answer.lower() for kw in case["keywords"])
+        keyword_hit = any(normalize(kw) in clean_answer for kw in case["keywords"])
         passed = has_sources and keyword_hit
         if not has_sources:
             reason = "no sources returned"

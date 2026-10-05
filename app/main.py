@@ -3,20 +3,35 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import logging
-from fastapi import FastAPI, HTTPException
+import os
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from app.graph import app_graph
+from app.nodes import vector_store
+from app.vectorstore import index_documents
 from app.history import append_message
 from app.cache import check_cache, write_cache
 from app.rate_limit import check_rate_limit
 from fastapi.staticfiles import StaticFiles
 
-print(f"### main.py LOADED FROM: {__file__}", flush=True)
-
-logging.basicConfig(level=logging.DEBUG, format="%(levelname)s: %(message)s")
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(levelname)s: %(message)s",
+)
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="Minty")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # A fresh `docker compose up` starts with an empty ./data volume; without
+    # this, every query would silently fall back. No-op if already indexed.
+    count = index_documents(vector_store)
+    logger.info(f"Vector store ready with {count} chunks")
+    yield
+
+
+app = FastAPI(title="Minty", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
@@ -31,8 +46,12 @@ def health_check():
 
 
 @app.post("/chat")
-def chat(request: ChatRequest):
-    if not check_rate_limit(request.session_id):
+def chat(request: ChatRequest, http_request: Request):
+    # Keyed on client IP, not session_id: session_id is client-supplied, so
+    # rotating it would reset the limit. Behind a reverse proxy this needs
+    # uvicorn's --proxy-headers so client.host is the real client.
+    client_ip = http_request.client.host if http_request.client else "unknown"
+    if not check_rate_limit(client_ip):
         raise HTTPException(
             status_code=429, detail="Rate limit exceeded. Please slow down."
         )

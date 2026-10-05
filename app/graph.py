@@ -17,8 +17,6 @@ from app.nodes import (
     fallback_node,
 )
 
-print(f"### graph.py LOADED FROM: {__file__}", flush=True)
-
 
 def route_after_classification(state: GraphState) -> str:
     return "retrieve" if state.get("classification") == "in_scope" else "fallback"

@@ -5,6 +5,6 @@ COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen
 COPY app ./app
 COPY sample_data ./sample_data
+COPY static ./static
 EXPOSE 8000
 CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
-COPY static ./static
