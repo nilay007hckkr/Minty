@@ -2,42 +2,42 @@
   {
     "query": "what is the daily ATM withdrawal limit",
     "expect": "answerable",
-    "keywords": ["1,000", "2,500"]
+    "keywords": ["$1,000", "1,000 per day"]
   },
   {
     "query": "are there any fees for using an out-of-network ATM",
     "expect": "answerable",
-    "keywords": ["3.00", "$3"]
+    "keywords": ["$3.00", "$3 per"]
   },
   {
     "query": "how can I avoid the monthly maintenance fee on my checking account",
     "expect": "answerable",
-    "keywords": ["1,500", "$12"]
+    "keywords": ["$1,500", "1,500"]
   },
   {
     "query": "what is the cut-off time for sending a domestic wire transfer",
     "expect": "answerable",
-    "keywords": ["4:00", "PM"]
+    "keywords": ["4:00 PM", "4 PM", "4:00 p.m."]
   },
   {
     "query": "how many fee-free withdrawals can I make from my savings account",
     "expect": "answerable",
-    "keywords": ["6", "$5"]
+    "keywords": ["6 fee-free", "six fee-free", "up to 6", "up to six"]
   },
   {
     "query": "how do I open a new checking account",
-    "expect": "fallback",
-    "keywords": []
+    "expect": "answerable",
+    "keywords": ["$50", "photo ID"]
   },
   {
     "query": "can I request a credit limit increase",
     "expect": "answerable",
-    "keywords": ["Card Settings", "business days", "credit check"]
+    "keywords": ["Card Settings", "credit check"]
   },
   {
     "query": "does the cashback rewards card charge foreign transaction fees",
     "expect": "answerable",
-    "keywords": ["does not charge", "no foreign"]
+    "keywords": ["no foreign transaction fee", "does not charge", "doesn't charge"]
   },
   {
     "query": "what is your favorite color",

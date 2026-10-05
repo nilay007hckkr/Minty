@@ -35,15 +35,37 @@ def format_docs(docs: List[Document]) -> str:
     return "\n\n".join([doc.page_content for doc in docs])
 
 
+def source_of(doc: Document) -> str:
+    # Chroma stores whatever path separator the indexing OS used; normalize so
+    # sources look the same whether indexed on Windows or in Docker.
+    return doc.metadata.get("source", "sample_data").replace("\\", "/")
+
+
+def first_word(text: str) -> str:
+    """First token of an LLM label, lowercased and stripped of quotes/punctuation,
+    so 'Yes.' -> 'yes' but 'no, though yes-ish' -> 'no'."""
+    words = text.strip().lower().split()
+    return words[0].strip(".,:;!'\"`*") if words else ""
+
+
+def final_verdict(analysis: str) -> str:
+    """Reads the verdict from the last non-empty line only, so a 'verdict: yes'
+    quoted mid-reasoning can't count as the final answer."""
+    lines = [l.strip() for l in analysis.strip().lower().splitlines() if l.strip()]
+    if not lines:
+        return "no"
+    return "yes" if lines[-1].strip(".'\"`*") == "verdict: yes" else "no"
+
+
 def classify_node(state: GraphState) -> dict:
     query = state.get("original_query", "")
     try:
-        label = classify_chain.invoke({"query": query}).strip().lower()
+        label = first_word(classify_chain.invoke({"query": query}))
     except groq.GroqError as e:
         logger.error(f"Classification API failed. Defaulting to in_scope. Error: {e}")
         label = "in_scope"
 
-    classification = "in_scope" if "in_scope" in label else "out_of_scope"
+    classification = "in_scope" if label == "in_scope" else "out_of_scope"
     return {"classification": classification, "query": query, "refinement_count": 0}
 
 
@@ -84,13 +106,11 @@ def grade_node(state: GraphState) -> dict:
     for doc in docs:
         for attempt in range(2):
             try:
-                verdict = (
+                verdict = first_word(
                     grade_chain.invoke({"query": query, "context": doc.page_content})
-                    .strip()
-                    .lower()
                 )
                 logger.debug(f"Grade {doc.metadata.get('source')} -> {verdict}")
-                if "yes" in verdict:
+                if verdict == "yes":
                     filtered_docs.append(doc)
                 break
             except groq.GroqError as e:
@@ -103,9 +123,7 @@ def grade_node(state: GraphState) -> dict:
                         f"Grading API failed twice for {doc.metadata.get('source')}. Skipping. Error: {e}"
                     )
 
-    sources = list(
-        set([doc.metadata.get("source", "sample_data") for doc in filtered_docs])
-    )
+    sources = sorted(set(source_of(doc) for doc in filtered_docs))
     return {"documents": filtered_docs, "sources": sources}
 
 
@@ -154,16 +172,9 @@ def validate_node(state: GraphState) -> dict:
         return {"is_grounded": "no"}
 
     try:
-        analysis = (
-            validate_chain.invoke({"context": context, "answer": answer})
-            .strip()
-            .lower()
-        )
+        analysis = validate_chain.invoke({"context": context, "answer": answer})
         logger.debug(f"Validate Analysis:\n{analysis}")
-
-        if "verdict: yes" in analysis:
-            return {"is_grounded": "yes"}
-        return {"is_grounded": "no"}
+        return {"is_grounded": final_verdict(analysis)}
     except groq.GroqError as e:
         logger.error(f"Validation API failed. Failing closed. Error: {e}")
         return {"is_grounded": "no"}

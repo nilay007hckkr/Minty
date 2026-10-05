@@ -83,3 +83,31 @@ def test_fallback_node_no_documents():
 def test_rerank_node_reorders_documents(mock_rerank):
     from app.nodes import rerank_node
     from langchain_core.documents import Document
+
+
+def test_first_word_takes_leading_label_only():
+    from app.nodes import first_word
+
+    assert first_word("Yes.") == "yes"
+    assert first_word("  'in_scope'\n") == "in_scope"
+    assert first_word("no, though it mentions yes") == "no"
+    assert first_word("not in_scope") == "not"
+    assert first_word("") == ""
+
+
+def test_final_verdict_reads_last_line_only():
+    from app.nodes import final_verdict
+
+    assert final_verdict("1. claim ok\nVerdict: yes") == "yes"
+    assert final_verdict("**Verdict: yes**") == "yes"
+    assert final_verdict("If grounded I'd say Verdict: yes\nVerdict: no") == "no"
+    assert final_verdict("Verdict: yes\n2. extra unsupported claim") == "no"
+    assert final_verdict("") == "no"
+
+
+def test_source_of_normalizes_windows_paths():
+    from app.nodes import source_of
+    from langchain_core.documents import Document
+
+    doc = Document(page_content="x", metadata={"source": "sample_data\FAQ.md"})
+    assert source_of(doc) == "sample_data/FAQ.md"

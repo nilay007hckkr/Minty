@@ -47,11 +47,11 @@ Rather than just claim this architecture is better than naive RAG, I built two s
 
 | System | Score | What actually happens |
 |---|---|---|
-| Naive RAG (retrieve → generate) | 7/12 | Confidently answers out-of-scope questions (e.g. "what's your favorite color") by generating from whatever's nearest in vector space and citing it as a source — has no concept of "nothing here is relevant." |
-| Reranked RAG (+ cross-encoder) | 7/12 | Same scope failures as naive RAG — reranking improves *which* documents get cited (e.g. narrows 3 sources down to 2 correct ones on one query) but doesn't add a scope check, so it still can't refuse an off-topic question. |
-| Minty (full pipeline) | 12/12 | Classification rejects out-of-scope queries before retrieval even runs; grading filters irrelevant documents; validation catches and declines weakly-grounded generations. |
+| Naive RAG (retrieve → generate) | 8/12 | Answers all 8 in-scope questions, but confidently answers all 4 out-of-scope questions (e.g. "what's your favorite color") by generating from whatever's nearest in vector space and citing it as a source — has no concept of "nothing here is relevant." |
+| Reranked RAG (+ cross-encoder) | 7/12 | Same 4 scope failures as naive RAG, plus one recall loss: on "how do I open a new checking account" the cut from 6 to 3 candidates drops the relevant chunk, so the answer misses the actual requirements. Reranking changes *which* documents get cited but adds no scope check. |
+| Minty (full pipeline) | 11/12 | Classification rejects all 4 out-of-scope queries before retrieval runs. The one miss is a **false refusal**: see below. |
 
-One caveat, in the interest of not overstating this: one of the 5 gaps above (`"how do I open a new checking account"`) reflects Minty's groundedness validator making a cautious call, not naive RAG being clearly wrong — it generated from genuinely relevant content, but couldn't independently verify its own output the way Minty's validation step does. The other 4 gaps are unambiguous: naive RAG answering "what's your favorite color" by citing a banking FAQ file as its source.
+The one Minty failure is worth being explicit about, because an earlier version of this eval scored it as a pass. `"how do I open a new checking account"` is answerable — `account_opening.md` lists the ID, SSN/ITIN and $50 deposit requirements — but Minty falls back. Tracing the retrieve and rerank steps shows the root cause is **reranker recall**: vector search ranks the "What documents do I need to open a checking account?" chunk 3rd of 6, but the cross-encoder pushes it out of the top 3 (behind the maintenance-fee and ATM-limit chunks). Grading then keeps only the minimum-age chunk, the answer is built from that alone, and the groundedness validator rejects it — partly on a fair basis, partly for being over-literal (it flagged the phrase "new checking account" as unsupported). The same reranker cut explains the reranked baseline's miss on this query. The eval set originally labeled this query `expect: fallback`, which turned a recall failure into a pass; it's now labeled `answerable`. Scores above are from two identical runs; in a third run Minty also falsely refused the ATM-limit question, so the validator is not fully deterministic even at temperature 0.
 
 Reproduce this yourself: `uv run python -m tests.run_comparison_eval` (runs all three graphs directly, no server needed — makes real Groq calls, roughly 3x the cost of the standard eval since each question runs through all three pipelines).
 
@@ -124,7 +124,7 @@ Retry cap on the refine loop: 2 attempts before falling back, enforced both by a
 - [x] Per-document LLM relevance grading (not a single batch judgment)
 - [x] Query refinement + retry loop on failed retrieval, capped at 2 attempts
 - [x] Post-generation groundedness validation — checks the generated answer's claims against the retrieved sources, not just whether retrieval succeeded
-- [x] Redis-backed chat history, semantic response caching, and per-session rate limiting
+- [x] Redis-backed chat history (stored, not yet used for multi-turn context), semantic response caching, and per-IP rate limiting
 - [x] Full LangSmith tracing — every graph node visible as a nested span, tagged per session
 - [x] Minimal same-origin HTML chat UI served via FastAPI static mount
 - [x] Dockerized (FastAPI + Redis via Compose)
@@ -155,7 +155,7 @@ sample_data/               Sample banking FAQ content (ATM fees, accounts, cards
 tests/
   test_graph.py            Mocked-LLM unit tests (no network calls)
   eval_set.json            Hand-built eval questions + expected outcomes
-  run_eval.py              Live eval harness against /chat (real Groq calls)
+  run_eval.py              Live eval harness (invokes the graph directly, real Groq calls)
   run_comparison_eval.py   Runs eval_set.json directly against naive/reranked/full graphs
 .github/workflows/
   ci.yml                  pytest + Docker build on push/PR
@@ -180,7 +180,7 @@ docker compose up --build
 ```bash
 uv sync
 docker run -d --name minty-redis -p 6379:6379 redis:7-alpine
-uv run python -m app.vectorstore   # first-time indexing
+uv run python -m app.vectorstore   # optional: the server also indexes on startup if the store is empty
 uv run uvicorn app.main:app
 ```
 
@@ -219,14 +219,15 @@ This isn't cosmetic — it directly replaces a debugging workflow this project r
 
 ## Evaluation
 
-**12/12** on a hand-built 12-question set covering all four sample FAQ topics plus four deliberately out-of-scope queries. See [Baseline comparison](#baseline-comparison) above for how this compares against naive and reranked-only RAG on the same questions.
+**11/12** on a hand-built 12-question set covering all four sample FAQ topics plus four deliberately out-of-scope queries (stable across two runs; one additional false refusal seen in a third). See [Baseline comparison](#baseline-comparison) above for how this compares against naive and reranked-only RAG on the same questions.
 
 Two things worth calling out honestly rather than just quoting the number:
 
-- One case (`"how do I open a new checking account"`) is scored as a correct **fallback**, not a direct answer — the groundedness validator rejected the model's first generation attempt as insufficiently grounded and declined rather than risk an inaccurate answer. That's the safety mechanism firing on real data, not a gap.
+- The one failure (`"how do I open a new checking account"`) is a false refusal by the groundedness validator — details in [Baseline comparison](#baseline-comparison). This query was previously labeled as an expected fallback, which made the eval report 12/12; that label was wrong.
 - The eval harness itself had a bug during development: naive substring keyword matching failed on markdown-formatted answers (e.g. `does **not** charge` doesn't literally contain `does not charge`). Fixed by stripping markdown before matching — a good reminder that a "failing" eval result is sometimes a bug in the test, not the system.
+- A second scoring bug of the same kind: gpt-oss emits typographic Unicode (narrow no-break space in `4:00 PM`, non-breaking hyphen in `fee-free`), so correct answers failed plain substring matching. The scorer now NFKC-normalizes text and dashes before matching. Earlier, overly loose keywords (`"6"`, `"PM"`) had been masking this.
 
-Run it yourself: `uv run python tests/run_eval.py` (requires the server running and a real Groq key — this makes live API calls, unlike the pytest suite).
+Run it yourself: `uv run python -m tests.run_eval` (invokes the graph directly — no server needed, and it bypasses the semantic cache so repeated runs measure the pipeline rather than cached answers; makes live Groq calls, unlike the pytest suite).
 
 ## Known limitations
 
