@@ -1,5 +1,6 @@
 import logging
 from functools import cache
+from typing import NamedTuple
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
 
@@ -8,6 +9,16 @@ logger = logging.getLogger(__name__)
 PERSIST_DIR = "./data/chroma_db"
 COLLECTION_NAME = "banking_faq"
 EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+class IndexSync(NamedTuple):
+    total: int
+    added: int
+    removed: int
+
+    @property
+    def changed(self) -> bool:
+        return bool(self.added or self.removed)
 
 
 @cache
@@ -29,7 +40,7 @@ def get_vectorstore(
     )
 
 
-def index_documents(vector_store: Chroma, data_dir: str = "sample_data") -> int:
+def index_documents(vector_store: Chroma, data_dir: str = "sample_data") -> IndexSync:
     """Syncs the collection with data_dir: adds new chunks, deletes stale ones.
     Chunk ids are content hashes, so an unchanged corpus is a no-op and an
     edited file or chunking change is picked up without deleting the DB."""
@@ -53,13 +64,18 @@ def index_documents(vector_store: Chroma, data_dir: str = "sample_data") -> int:
     logger.info(
         f"Index sync: {len(new_ids)} added, {len(stale)} removed, {len(chunks)} total"
     )
-    return len(chunks)
+    return IndexSync(total=len(chunks), added=len(new_ids), removed=len(stale))
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     vector_store = get_vectorstore()
-    index_documents(vector_store)
+    sync = index_documents(vector_store)
+    if sync.changed:
+        # A running server's cached answers may quote the old content.
+        from app.cache import clear_cache
+
+        print(f"Content changed: cleared {clear_cache()} cached answers")
     print(f"Total vectors in collection: {vector_store._collection.count()}")
 
     query = "what is the daily withdrawal limit"

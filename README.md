@@ -140,8 +140,9 @@ Follow-up questions ("what about premium accounts?") are rewritten into a standa
 - [x] Fails fast during an LLM API outage: grading stops after two consecutive failures and skips the refine loop, and the user gets a "temporarily unavailable" message instead of "I don't know"
 - [x] Lazy initialization: importing the app loads no models and creates no API clients, so the unit tests and CI need no API key
 - [x] Full LangSmith tracing — every graph node visible as a nested span, tagged per session
-- [x] Minimal same-origin HTML chat UI served via FastAPI static mount
-- [x] Dockerized (FastAPI + Redis via Compose)
+- [x] Minimal same-origin HTML chat UI served via FastAPI static mount. Answers render as markdown (vendored `marked` + `DOMPurify` with an allow-list of formatting tags only: no links, images or attributes, since LLM output is untrusted)
+- [x] Cached answers are cleared automatically when the indexed content changes
+- [x] Dockerized (FastAPI + Redis via Compose). The image runs as a non-root user, excludes dev dependencies, and bakes in both models, so containers start without downloading from Hugging Face
 - [x] pytest suite with mocked LLM calls (fast, free, CI-safe) + a separate live eval harness (real API calls, run manually)
 - [x] GitHub Actions CI (tests + Docker build on every push)
 - [x] Baseline comparison against naive and reranked-only RAG variants, using the same eval set
@@ -187,7 +188,7 @@ cd Minty
 cp .env.example .env   # add your GROQ_API_KEY (and optionally LANGSMITH_API_KEY, see below)
 ```
 
-**With Docker (recommended).** Redis is reachable only inside the compose network and is not published on the host:
+**With Docker (recommended).** Redis is reachable only inside the compose network and is not published on the host. The vector index lives in the `chroma-data` named volume and is rebuilt automatically if empty:
 ```bash
 docker compose up --build
 ```

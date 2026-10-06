@@ -13,7 +13,7 @@ from app.graph import app_graph, RECURSION_LIMIT
 from app.nodes import condense_query
 from app.vectorstore import get_vectorstore, index_documents
 from app.history import append_message, get_history
-from app.cache import check_cache, write_cache
+from app.cache import check_cache, clear_cache, purge_legacy_cache, write_cache
 from app.rate_limit import check_rate_limit
 from app.redis_client import redis_client
 from fastapi.staticfiles import StaticFiles
@@ -30,8 +30,13 @@ async def lifespan(app: FastAPI):
     # A fresh `docker compose up` starts with an empty ./data volume; without
     # this, every query would silently fall back. Also picks up edits to
     # sample_data. No-op if the index is already in sync.
-    count = index_documents(get_vectorstore())
-    logger.info(f"Vector store ready with {count} chunks")
+    sync = index_documents(get_vectorstore())
+    logger.info(f"Vector store ready with {sync.total} chunks")
+    if sync.changed:
+        logger.info(f"Content changed: cleared {clear_cache()} cached answers")
+    purged = purge_legacy_cache()
+    if purged:
+        logger.info(f"Removed {purged} keys left by the old semantic cache")
     yield
 
 

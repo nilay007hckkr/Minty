@@ -72,3 +72,31 @@ def write_cache(query: str, response: dict) -> None:
         redis_client.set(key, json.dumps(response), ex=CACHE_TTL_SECONDS)
     except redis.RedisError as e:
         logger.warning(f"Cache write skipped, Redis unavailable: {e}")
+
+
+def _delete_matching(pattern: str) -> int:
+    deleted = 0
+    for key in redis_client.scan_iter(match=pattern, count=500):
+        deleted += redis_client.delete(key)
+    return deleted
+
+
+def clear_cache() -> int:
+    """Drops every cached answer. Called when the indexed content changes,
+    since cached answers would otherwise keep quoting the old content for up
+    to CACHE_TTL_SECONDS."""
+    try:
+        return _delete_matching(f"{CACHE_PREFIX}*")
+    except redis.RedisError as e:
+        logger.warning(f"Cache clear skipped, Redis unavailable: {e}")
+        return 0
+
+
+def purge_legacy_cache() -> int:
+    """Removes keys left by the old semantic cache. Its semcache:index SET had
+    no TTL, so it would otherwise stay in Redis forever."""
+    try:
+        return _delete_matching("semcache:*")
+    except redis.RedisError as e:
+        logger.warning(f"Legacy cache purge skipped, Redis unavailable: {e}")
+        return 0

@@ -13,3 +13,6 @@ faiss_index/
 *.faiss
 *.pkl
 PROGRESS.txt
+
+# Written by tests/run_eval.py on every run
+tests/eval_results.json

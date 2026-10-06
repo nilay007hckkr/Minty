@@ -171,6 +171,19 @@
   .msg.user .bubble { background: var(--ink); color: var(--text-inverse); border-bottom-right-radius: 4px; }
   .msg.assistant .bubble { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-bottom-left-radius: 4px; }
   .msg.assistant.error .bubble { background: var(--error-soft); border-color: #E3B6B0; color: var(--error); }
+  /* User text and errors are plain text; keep their line breaks. */
+  .msg.user .bubble, .msg.assistant.error .bubble { white-space: pre-wrap; }
+  /* Rendered markdown in assistant answers. */
+  .bubble.md > :first-child { margin-top: 0; }
+  .bubble.md > :last-child { margin-bottom: 0; }
+  .bubble.md p { margin: 0 0 8px; }
+  .bubble.md ul, .bubble.md ol { margin: 0 0 8px; padding-left: 20px; }
+  .bubble.md li { margin: 2px 0; }
+  .bubble.md h1, .bubble.md h2, .bubble.md h3, .bubble.md h4 { font-size: 15px; font-weight: 600; margin: 10px 0 6px; }
+  .bubble.md code { font-size: 13px; background: var(--border); padding: 1px 4px; border-radius: 4px; }
+  .bubble.md table { border-collapse: collapse; margin: 4px 0 8px; font-size: 14px; display: block; overflow-x: auto; }
+  .bubble.md th, .bubble.md td { border: 1px solid var(--border); padding: 4px 8px; text-align: left; }
+  .bubble.md a { color: inherit; }
 
   .msg-enter { animation: msg-in 0.32s ease-out; }
 
@@ -349,6 +362,8 @@
   </main>
 </div>
 
+<script src="/static/vendor/marked.umd.js"></script>
+<script src="/static/vendor/purify.min.js"></script>
 <script>
   const sessionId = crypto.randomUUID();
   const chatLog = document.getElementById('chatLog');
@@ -356,13 +371,36 @@
   const sendBtn = document.getElementById('sendBtn');
   const promptChips = document.getElementById('promptChips');
 
+  const MD_ALLOWED_TAGS = ['p', 'br', 'strong', 'em', 'code', 'ul', 'ol', 'li',
+    'h1', 'h2', 'h3', 'h4', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'blockquote', 'hr'];
+
+  function renderMarkdown(text) {
+    // Fall back to escaped plain text if the vendored libs failed to load.
+    if (!window.marked || !window.DOMPurify) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML.replace(/\n/g, '<br>');
+    }
+    const html = marked.parse(text, { gfm: true, breaks: true });
+    // Allow-list only formatting tags: no links, images, or attributes, so
+    // a prompt-injected answer can't add clickable or loading content.
+    return DOMPurify.sanitize(html, { ALLOWED_TAGS: MD_ALLOWED_TAGS, ALLOWED_ATTR: [] });
+  }
+
   function addMessage({ role, text, sources = [], cached = false, isError = false }) {
     const wrap = document.createElement('div');
     wrap.className = `msg ${role}${isError ? ' error' : ''} msg-enter`;
 
     const bubble = document.createElement('div');
     bubble.className = 'bubble';
-    bubble.textContent = text;
+    if (role === 'assistant' && !isError) {
+      // Answers are LLM output, so treat them as untrusted: render markdown,
+      // then sanitize before it touches the DOM. User text stays textContent.
+      bubble.classList.add('md');
+      bubble.innerHTML = renderMarkdown(text);
+    } else {
+      bubble.textContent = text;
+    }
     wrap.appendChild(bubble);
 
     if (cached) {
@@ -379,7 +417,8 @@
         const chip = document.createElement('span');
         chip.className = 'source-chip';
         const name = src.split(/[\\/]/).pop().replace(/\.md$/, '');
-        chip.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 1h5l2 2v7H2V1Z" stroke="currentColor" stroke-width="1"/></svg>${name}`;
+        chip.innerHTML = `<svg width="11" height="11" viewBox="0 0 11 11" fill="none"><path d="M2 1h5l2 2v7H2V1Z" stroke="currentColor" stroke-width="1"/></svg>`;
+        chip.append(name);  // text node, not HTML
         sourcesWrap.appendChild(chip);
       });
       wrap.appendChild(sourcesWrap);
