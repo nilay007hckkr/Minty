@@ -243,5 +243,5 @@ def test_cache_key_is_stable_across_processes():
     from app.cache import _cache_key
 
     assert _cache_key("hello") == _cache_key("hello")
-    assert _cache_key("hello").startswith("semcache:")
-    assert len(_cache_key("hello")) == len("semcache:") + 32
+    assert _cache_key("hello").startswith("qcache:")
+    assert len(_cache_key("hello")) == len("qcache:") + 32
