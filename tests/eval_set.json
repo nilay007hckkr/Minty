@@ -2,42 +2,70 @@
   {
     "query": "what is the daily ATM withdrawal limit",
     "expect": "answerable",
-    "keywords": ["$1,000", "1,000 per day"]
+    "keywords": [
+      "$1,000",
+      "1,000 per day"
+    ]
   },
   {
     "query": "are there any fees for using an out-of-network ATM",
     "expect": "answerable",
-    "keywords": ["$3.00", "$3 per"]
+    "keywords": [
+      "$3.00",
+      "$3 per"
+    ]
   },
   {
     "query": "how can I avoid the monthly maintenance fee on my checking account",
     "expect": "answerable",
-    "keywords": ["$1,500", "1,500"]
+    "keywords": [
+      "$1,500",
+      "1,500"
+    ]
   },
   {
     "query": "what is the cut-off time for sending a domestic wire transfer",
     "expect": "answerable",
-    "keywords": ["4:00 PM", "4 PM", "4:00 p.m."]
+    "keywords": [
+      "4:00 PM",
+      "4 PM",
+      "4:00 p.m."
+    ]
   },
   {
     "query": "how many fee-free withdrawals can I make from my savings account",
     "expect": "answerable",
-    "keywords": ["6 fee-free", "six fee-free", "up to 6", "up to six"]
+    "keywords": [
+      "6 fee-free",
+      "six fee-free",
+      "up to 6",
+      "up to six"
+    ]
   },
   {
     "query": "how do I open a new checking account",
     "expect": "answerable",
-    "keywords": ["$50", "photo ID"]
+    "keywords": [
+      "$50",
+      "photo ID"
+    ]
   },
   {
     "query": "can I request a credit limit increase",
     "expect": "answerable",
-    "keywords": ["Card Settings", "credit check"]
+    "keywords": [
+      "Card Settings",
+      "credit check"
+    ]
   },
   {
     "query": "does the cashback rewards card charge foreign transaction fees",
     "expect": "answerable",
-    "keywords": ["no foreign transaction fee", "does not charge", "doesn't charge"]
+    "keywords": [
+      "no foreign transaction fee",
+      "does not charge",
+      "doesn't charge"
+    ]
   },
   {
     "query": "what is your favorite color",
@@ -58,5 +86,77 @@
     "query": "do you offer auto loans",
     "expect": "fallback",
     "keywords": []
+  },
+  {
+    "query": "what is the fee for an outgoing international wire transfer",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "Only the DOMESTIC outgoing wire fee ($25) is in the KB."
+  },
+  {
+    "query": "what is the cut-off time for international wire transfers",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "Only the DOMESTIC cut-off (4:00 PM ET) is in the KB."
+  },
+  {
+    "query": "is there a fee for receiving an incoming domestic wire transfer",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "Only the OUTGOING domestic wire fee ($25) is in the KB."
+  },
+  {
+    "query": "what is the daily ATM withdrawal limit for a savings account",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "Limits are given for checking accounts ($1,000) and Premium/Wealth ($2,500), not savings."
+  },
+  {
+    "query": "does the Premium checking account have a monthly maintenance fee",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "Only the STANDARD checking fee ($12) and its waivers are in the KB."
+  },
+  {
+    "query": "how many out-of-network ATM fee reimbursements do Wealth Management account holders get",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "Only PREMIUM checking gets up to 5 reimbursements per cycle; Wealth Management isn't mentioned."
+  },
+  {
+    "query": "what is the excessive withdrawal fee on a checking account",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "The $5 excessive-withdrawal fee applies to SAVINGS accounts."
+  },
+  {
+    "query": "what is the minimum opening deposit for a standard savings account",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "$50 is for opening a CHECKING account, $100 for High-Yield Savings; standard savings deposit isn't stated ('no minimum balance to earn interest' is a different thing)."
+  },
+  {
+    "query": "is there a monthly maintenance fee on the High-Yield Savings account",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "The $12 monthly maintenance fee is for STANDARD CHECKING."
+  },
+  {
+    "query": "what is the annual fee for the Cashback Rewards card",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "KB covers its rewards rates and foreign transaction fees, not an annual fee ('no annual cap' is about rewards)."
+  },
+  {
+    "query": "what is the purchase APR on the Standard credit card",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "KB covers the Standard card's 3% foreign transaction fee only; no APR anywhere."
+  },
+  {
+    "query": "how long does it take to get a replacement debit card",
+    "expect": "hard_negative",
+    "keywords": [],
+    "trap": "5-7 business days is for the FIRST debit card after account opening, not replacements."
   }
 ]

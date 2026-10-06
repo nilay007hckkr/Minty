@@ -16,3 +16,5 @@ PROGRESS.txt
 
 # Written by tests/run_eval.py on every run
 tests/eval_results.json
+# Written by tests/run_comparison_eval.py on every run
+tests/comparison_results.json
