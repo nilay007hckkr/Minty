@@ -9,5 +9,7 @@ class GraphState(TypedDict, total=False):
     sources: List[str]
     answer: str
     refinement_count: int
-    is_grounded: str
+    generation_attempts: int
+    is_grounded: bool
+    unsupported_claims: List[str]
     classification: str

@@ -18,6 +18,13 @@ from app.nodes import (
 )
 
 
+MAX_REFINEMENTS = 2
+MAX_GENERATIONS = 2
+# Worst case: classify + 3x(retrieve, rerank, grade) + 2 refine
+# + 2x(generate, validate) + fallback = 17 steps.
+RECURSION_LIMIT = 25
+
+
 def route_after_classification(state: GraphState) -> str:
     return "retrieve" if state.get("classification") == "in_scope" else "fallback"
 
@@ -28,15 +35,22 @@ def route_after_grading(state: GraphState) -> str:
 
     if filtered_docs:
         return "generate"
-    elif count < 2:
+    elif count < MAX_REFINEMENTS:
         return "refine"
     else:
         return "fallback"
 
 
 def route_after_validation(state: GraphState) -> str:
-    if state.get("is_grounded", "no") == "yes":
+    if state.get("is_grounded", False):
         return END
+    # Retry once with the validator's feedback, but only when it named
+    # specific claims; an API failure or bare "no" has nothing to fix.
+    if (
+        state.get("unsupported_claims")
+        and state.get("generation_attempts", 0) < MAX_GENERATIONS
+    ):
+        return "generate"
     return "fallback"
 
 
@@ -72,7 +86,9 @@ workflow.add_edge("refine", "retrieve")
 workflow.add_edge("generate", "validate")
 
 workflow.add_conditional_edges(
-    "validate", route_after_validation, {END: END, "fallback": "fallback"}
+    "validate",
+    route_after_validation,
+    {END: END, "generate": "generate", "fallback": "fallback"},
 )
 
 workflow.add_edge("fallback", END)
@@ -94,7 +110,9 @@ if __name__ == "__main__":
             "refinement_count": 0,
         }
 
-        result = app_graph.invoke(initial_state, config={"recursion_limit": 15})
+        result = app_graph.invoke(
+            initial_state, config={"recursion_limit": RECURSION_LIMIT}
+        )
 
         print(f"\nAnswer: {result.get('answer')}")
         if result.get("sources"):

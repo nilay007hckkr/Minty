@@ -7,10 +7,10 @@ import os
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
-from app.graph import app_graph
-from app.nodes import vector_store
-from app.vectorstore import index_documents
-from app.history import append_message
+from app.graph import app_graph, RECURSION_LIMIT
+from app.nodes import condense_query
+from app.vectorstore import get_vectorstore, index_documents
+from app.history import append_message, get_history
 from app.cache import check_cache, write_cache
 from app.rate_limit import check_rate_limit
 from fastapi.staticfiles import StaticFiles
@@ -25,8 +25,9 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # A fresh `docker compose up` starts with an empty ./data volume; without
-    # this, every query would silently fall back. No-op if already indexed.
-    count = index_documents(vector_store)
+    # this, every query would silently fall back. Also picks up edits to
+    # sample_data. No-op if the index is already in sync.
+    count = index_documents(get_vectorstore())
     logger.info(f"Vector store ready with {count} chunks")
     yield
 
@@ -48,32 +49,43 @@ def health_check():
 @app.post("/chat")
 def chat(request: ChatRequest, http_request: Request):
     # Keyed on client IP, not session_id: session_id is client-supplied, so
-    # rotating it would reset the limit. Behind a reverse proxy this needs
-    # uvicorn's --proxy-headers so client.host is the real client.
+    # rotating it would reset the limit. Behind a reverse proxy, set
+    # FORWARDED_ALLOW_IPS to the proxy's address so uvicorn trusts its
+    # X-Forwarded-For header; otherwise every client shares the proxy's IP.
     client_ip = http_request.client.host if http_request.client else "unknown"
     if not check_rate_limit(client_ip):
         raise HTTPException(
             status_code=429, detail="Rate limit exceeded. Please slow down."
         )
 
-    cached = check_cache(request.query)
+    # Follow-ups like "what about premium accounts?" are rewritten into a
+    # standalone question before caching and retrieval see them.
+    query = condense_query(get_history(request.session_id), request.query)
+    if query != request.query:
+        logger.info(f"Condensed follow-up: '{request.query}' -> '{query}'")
+
+    cached = check_cache(query)
     if cached:
         append_message(request.session_id, "user", request.query)
         append_message(request.session_id, "assistant", cached["answer"])
         return {**cached, "cached": True}
 
     initial_state = {
-        "original_query": request.query,
-        "query": request.query,
+        "original_query": query,
+        "query": query,
         "refinement_count": 0,
     }
     try:
         result = app_graph.invoke(
             initial_state,
             config={
-                "recursion_limit": 15,
+                "recursion_limit": RECURSION_LIMIT,
                 "run_name": f"chat-{request.session_id}",
-                "metadata": {"session_id": request.session_id, "query": request.query},
+                "metadata": {
+                    "session_id": request.session_id,
+                    "query": request.query,
+                    "standalone_query": query,
+                },
                 "tags": ["chat-endpoint"],
             },
         )
@@ -90,7 +102,7 @@ def chat(request: ChatRequest, http_request: Request):
     }
 
     if result.get("sources"):
-        write_cache(request.query, response)
+        write_cache(query, response)
 
     append_message(request.session_id, "user", request.query)
     append_message(request.session_id, "assistant", response["answer"])
