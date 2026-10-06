@@ -59,6 +59,15 @@ CASES = [
     ("fee-free withdrawals",
      "You can make up to six fee-free withdrawals or transfers each statement cycle; every additional one costs $5.",
      True),
+    # Subtle: found in the hard-negative eval, where all three systems (and
+    # Minty's validator) turned "no minimum balance to start earning interest"
+    # into "no minimum opening deposit".
+    ("standard savings account earns",
+     "The standard savings account earns 2.10% APY, compounded daily and credited monthly, and there's no minimum balance required to start earning interest.",
+     True),
+    ("standard savings account earns",
+     "There is no minimum opening deposit for a standard savings account, so you can open it with any amount and start earning 2.10% APY.",
+     False),
     ("fee-free withdrawals",
      "You can make up to 6 fee-free withdrawals per statement cycle; every additional one costs $5, and the count resets on the 1st of each month.",
      False),
