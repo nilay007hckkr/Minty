@@ -57,7 +57,7 @@ def _redis_down(*args, **kwargs):
 
 @pytest.fixture
 def redis_offline():
-    methods = ["get", "set", "incr", "expire", "rpush", "lrange", "ping"]
+    methods = ["get", "set", "incr", "expire", "rpush", "ltrim", "lrange", "ping"]
     patches = [
         patch(f"app.redis_client.redis_client.{m}", side_effect=_redis_down)
         for m in methods
@@ -107,3 +107,53 @@ def test_health_reports_degraded_when_redis_is_down(redis_offline, client):
     resp = client.get("/health")
     assert resp.status_code == 200
     assert resp.json() == {"status": "degraded", "redis": "unavailable"}
+
+
+# --- input limits ------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"query": "", "session_id": "s1"},
+        {"query": "   \n ", "session_id": "s1"},
+        {"query": "x" * 501, "session_id": "s1"},
+        {"query": "ATM limit?", "session_id": ""},
+        {"query": "ATM limit?", "session_id": "a" * 65},
+        {"query": "ATM limit?", "session_id": "bad:id*with{chars}"},
+    ],
+)
+def test_chat_rejects_invalid_input_before_any_work(payload, client):
+    with patch("app.main.app_graph.invoke") as invoke, \
+            patch("app.main.check_rate_limit") as rate_limit:
+        resp = client.post("/chat", json=payload)
+
+    assert resp.status_code == 422
+    invoke.assert_not_called()
+    rate_limit.assert_not_called()
+
+
+def test_chat_accepts_max_length_query_and_uuid_session(redis_offline, client):
+    graph_result = {"answer": "ok", "sources": []}
+    with patch("app.main.app_graph.invoke", return_value=graph_result) as invoke, \
+            patch("app.main.condense_query", side_effect=lambda h, q: q):
+        resp = client.post(
+            "/chat",
+            json={"query": "  " + "x" * 500 + "  ",
+                  "session_id": "3f2b8c1e-9a4d-4e2f-8b7a-1c2d3e4f5a6b"},
+        )
+
+    assert resp.status_code == 200
+    # Whitespace is stripped before the query reaches the graph.
+    assert invoke.call_args.args[0]["original_query"] == "x" * 500
+
+
+# --- history trimming -------------------------------------------------------
+
+def test_append_message_trims_history():
+    from app.history import HISTORY_MAX_MESSAGES, append_message
+
+    with patch("app.history.redis_client") as r:
+        append_message("s1", "user", "hi")
+
+    r.rpush.assert_called_once()
+    r.ltrim.assert_called_once_with("history:s1", -HISTORY_MAX_MESSAGES, -1)

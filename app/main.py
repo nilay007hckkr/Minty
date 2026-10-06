@@ -7,7 +7,8 @@ import os
 from contextlib import asynccontextmanager
 import redis
 from fastapi import FastAPI, HTTPException, Request
-from pydantic import BaseModel
+from typing import Annotated
+from pydantic import BaseModel, StringConstraints
 from app.graph import app_graph, RECURSION_LIMIT
 from app.nodes import condense_query
 from app.vectorstore import get_vectorstore, index_documents
@@ -38,9 +39,18 @@ app = FastAPI(title="Minty", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
+MAX_QUERY_CHARS = 500
+
+
 class ChatRequest(BaseModel):
-    query: str
-    session_id: str
+    # Bounded because each query fans out into up to ~10 LLM calls; an empty
+    # or 100 KB query would otherwise go straight to Groq. Violations -> 422.
+    query: Annotated[
+        str,
+        StringConstraints(strip_whitespace=True, min_length=1, max_length=MAX_QUERY_CHARS),
+    ]
+    # Becomes part of a Redis key; the UI sends crypto.randomUUID().
+    session_id: Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9_-]{1,64}$")]
 
 
 @app.get("/health")

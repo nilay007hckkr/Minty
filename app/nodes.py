@@ -165,6 +165,7 @@ def grade_node(state: GraphState) -> dict:
     query = state.get("query", "")
     docs = state.get("documents", [])
     filtered_docs = []
+    api_failed = False
 
     for doc in docs:
         for attempt in range(2):
@@ -183,11 +184,18 @@ def grade_node(state: GraphState) -> dict:
                     )
                 else:
                     logger.error(
-                        f"Grading API failed twice for {doc.metadata.get('source')}. Skipping. Error: {e}"
+                        f"Grading API failed twice for {doc.metadata.get('source')}. "
+                        f"Stopping grading. Error: {e}"
                     )
+                    api_failed = True
+        if api_failed:
+            # Two consecutive failures means the API is very likely down.
+            # Grading the remaining docs, then refining and re-grading, would
+            # only add more doomed calls (each with ChatGroq's own retries).
+            break
 
     sources = sorted(set(source_of(doc) for doc in filtered_docs))
-    return {"documents": filtered_docs, "sources": sources}
+    return {"documents": filtered_docs, "sources": sources, "upstream_error": api_failed}
 
 
 def refine_node(state: GraphState) -> dict:
@@ -235,7 +243,11 @@ def generate_node(state: GraphState) -> dict:
             )
     except LLM_ERRORS as e:
         logger.error(f"Generation API failed: {e}")
-        answer = "Error: Upstream API failure during generation."
+        return {
+            "answer": "Error: Upstream API failure during generation.",
+            "generation_attempts": attempts + 1,
+            "upstream_error": True,
+        }
 
     return {"answer": answer, "generation_attempts": attempts + 1}
 
@@ -264,7 +276,10 @@ def validate_node(state: GraphState) -> dict:
 def fallback_node(state: GraphState) -> dict:
     docs = state.get("documents", [])
 
-    if not docs:
+    if state.get("upstream_error"):
+        # Not "I don't know": the KB may well cover this, the model API failed.
+        message = "I'm temporarily unable to answer because an upstream service is unavailable. Please try again in a moment."
+    elif not docs:
         message = "I don't have enough information in the provided banking database to answer that confidently."
     else:
         message = "I found related information in our banking database, but I couldn't generate a fully verified answer based strictly on those guidelines."

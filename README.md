@@ -136,6 +136,8 @@ Follow-up questions ("what about premium accounts?") are rewritten into a standa
 - [x] Post-generation groundedness validation — checks the generated answer's factual claims against the retrieved sources, with one feedback-driven revision before falling back
 - [x] Structured (strict JSON-schema) outputs for every LLM decision step
 - [x] Multi-turn follow-ups via history-aware query condensation, plus Redis response caching (normalized exact match, see [Known limitations](#known-limitations)) and per-IP rate limiting, all degrading gracefully if Redis is unavailable
+- [x] Input limits on `/chat` (query 1–500 chars after trimming, constrained `session_id`) → 422 before any LLM work
+- [x] Fails fast during an LLM API outage: grading stops after two consecutive failures and skips the refine loop, and the user gets a "temporarily unavailable" message instead of "I don't know"
 - [x] Lazy initialization: importing the app loads no models and creates no API clients, so the unit tests and CI need no API key
 - [x] Full LangSmith tracing — every graph node visible as a nested span, tagged per session
 - [x] Minimal same-origin HTML chat UI served via FastAPI static mount
@@ -185,7 +187,7 @@ cd Minty
 cp .env.example .env   # add your GROQ_API_KEY (and optionally LANGSMITH_API_KEY, see below)
 ```
 
-**With Docker (recommended):**
+**With Docker (recommended).** Redis is reachable only inside the compose network and is not published on the host:
 ```bash
 docker compose up --build
 ```
@@ -193,7 +195,7 @@ docker compose up --build
 **Locally:**
 ```bash
 uv sync
-docker run -d --name minty-redis -p 6379:6379 redis:7-alpine
+docker run -d --name minty-redis -p 127.0.0.1:6379:6379 redis:7-alpine   # localhost only
 uv run python -m app.vectorstore   # optional: the server also syncs the index on startup
 uv run uvicorn app.main:app
 ```

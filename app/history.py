@@ -8,6 +8,9 @@ from app.redis_client import redis_client
 logger = logging.getLogger(__name__)
 
 HISTORY_TTL_SECONDS = 60 * 60 * 24
+# Only the last few messages are ever read (get_history's limit); keep a small
+# margin rather than letting a long session grow the list for 24h.
+HISTORY_MAX_MESSAGES = 20
 
 
 # History is an optional feature: on a Redis failure, the chat continues as
@@ -17,6 +20,7 @@ def append_message(session_id: str, role: str, content: str) -> None:
     message = json.dumps({"role": role, "content": content})
     try:
         redis_client.rpush(key, message)
+        redis_client.ltrim(key, -HISTORY_MAX_MESSAGES, -1)
         redis_client.expire(key, HISTORY_TTL_SECONDS)
     except redis.RedisError as e:
         logger.warning(f"History write skipped, Redis unavailable: {e}")
