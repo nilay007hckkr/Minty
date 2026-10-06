@@ -157,3 +157,65 @@ def test_append_message_trims_history():
 
     r.rpush.assert_called_once()
     r.ltrim.assert_called_once_with("history:s1", -HISTORY_MAX_MESSAGES, -1)
+
+
+# --- cache invalidation on content change ------------------------------------
+
+def test_clear_cache_deletes_only_answer_keys():
+    from app.cache import clear_cache
+
+    with patch("app.cache.redis_client") as r:
+        r.scan_iter.return_value = iter(["qcache:a", "qcache:b"])
+        r.delete.return_value = 1
+        assert clear_cache() == 2
+
+    assert r.scan_iter.call_args.kwargs["match"] == "qcache:*"
+
+
+def test_purge_legacy_cache_targets_old_semantic_keys():
+    from app.cache import purge_legacy_cache
+
+    with patch("app.cache.redis_client") as r:
+        r.scan_iter.return_value = iter(["semcache:index", "semcache:abc"])
+        r.delete.return_value = 1
+        assert purge_legacy_cache() == 2
+
+    assert r.scan_iter.call_args.kwargs["match"] == "semcache:*"
+
+
+def test_cache_maintenance_survives_redis_down():
+    from app.cache import clear_cache, purge_legacy_cache
+
+    with patch("app.cache.redis_client.scan_iter", side_effect=_redis_down):
+        assert clear_cache() == 0
+        assert purge_legacy_cache() == 0
+
+
+@pytest.mark.parametrize("changed", [True, False])
+def test_startup_clears_cache_only_when_content_changed(changed):
+    from app.main import app
+    from app.vectorstore import IndexSync
+
+    sync = IndexSync(total=13, added=2 if changed else 0, removed=1 if changed else 0)
+    with patch("app.main.get_vectorstore"), \
+            patch("app.main.index_documents", return_value=sync), \
+            patch("app.main.clear_cache", return_value=0) as clear, \
+            patch("app.main.purge_legacy_cache", return_value=0) as purge:
+        with TestClient(app):  # `with` runs the lifespan
+            pass
+
+    assert clear.called is changed
+    purge.assert_called_once()
+
+
+def test_index_documents_reports_added_and_removed():
+    from unittest.mock import MagicMock
+    from app.vectorstore import index_documents
+
+    store = MagicMock()
+    store.get.return_value = {"ids": ["stale-chunk-id"]}
+
+    sync = index_documents(store)
+
+    assert sync.removed == 1 and sync.added == sync.total > 0 and sync.changed
+    store.delete.assert_called_once_with(ids=["stale-chunk-id"])

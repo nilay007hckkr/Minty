@@ -291,3 +291,20 @@ def test_fallback_message_distinguishes_outage_from_unknown():
 
     assert "temporarily unable" in outage
     assert "don't have enough information" in unknown
+
+
+@patch("app.nodes.get_grade_chain")
+def test_grade_node_judges_against_original_question_not_refined_query(mock_get_chain):
+    from app.nodes import grade_node
+
+    mock_get_chain.return_value.invoke.return_value = GradeDecision(relevant=True)
+    state = {
+        "original_query": "what is the ATM limit",
+        "query": "daily automated teller machine cash withdrawal maximum",
+        "documents": [Document(page_content="doc", metadata={"source": "a.md"})],
+    }
+
+    grade_node(state)
+
+    sent = mock_get_chain.return_value.invoke.call_args.args[0]
+    assert sent["query"] == "what is the ATM limit"

@@ -18,7 +18,11 @@ services:
     depends_on:
       - redis
     volumes:
-      - ./data:/app/data
+      # Named volume, not a ./data bind mount: the app runs as a non-root
+      # user, and on Linux Docker creates a missing bind-mount dir as root,
+      # which the app couldn't write to. The index rebuilds itself on startup.
+      - chroma-data:/app/data
 
 volumes:
   redis-data:
+  chroma-data:

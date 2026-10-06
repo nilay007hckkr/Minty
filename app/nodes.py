@@ -162,7 +162,10 @@ def rerank_node(state: GraphState) -> dict:
 
 
 def grade_node(state: GraphState) -> dict:
-    query = state.get("query", "")
+    # Relevance is judged against what the user asked, not the refined search
+    # query: refinement adds synonyms to help retrieval and can drift, and
+    # generate answers original_query, so that's what the docs must support.
+    query = state.get("original_query") or state.get("query", "")
     docs = state.get("documents", [])
     filtered_docs = []
     api_failed = False
