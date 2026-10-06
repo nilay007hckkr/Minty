@@ -336,7 +336,7 @@
 
     <div class="composer">
       <div class="composer-row">
-        <textarea id="queryInput" class="composer-input" rows="1" placeholder="Ask about fees, limits, accounts…"></textarea>
+        <textarea id="queryInput" class="composer-input" rows="1" maxlength="500" placeholder="Ask about fees, limits, accounts…"></textarea>
         <button id="sendBtn" class="send-btn" type="button">
           <span>Ask</span>
           <svg width="15" height="15" viewBox="0 0 15 15" fill="none">
@@ -423,7 +423,12 @@
       hideTyping();
 
       if (!res.ok) {
-        addMessage({ role: 'assistant', text: `Something went wrong on the server (${res.status}). Try again in a moment.`, isError: true });
+        const messages = {
+          422: 'That question is too long — please keep it under 500 characters.',
+          429: "You're sending messages too quickly. Please wait a minute and try again.",
+        };
+        const text = messages[res.status] || `Something went wrong on the server (${res.status}). Try again in a moment.`;
+        addMessage({ role: 'assistant', text, isError: true });
         return;
       }
 

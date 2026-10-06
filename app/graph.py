@@ -33,6 +33,9 @@ def route_after_grading(state: GraphState) -> str:
     filtered_docs = state.get("documents", [])
     count = state.get("refinement_count", 0)
 
+    # API down: refining would just re-run retrieval and more failing grade calls.
+    if state.get("upstream_error"):
+        return "fallback"
     if filtered_docs:
         return "generate"
     elif count < MAX_REFINEMENTS:

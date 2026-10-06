@@ -1,8 +1,10 @@
 services:
   redis:
     image: redis:7-alpine
-    ports:
-      - "6379:6379"
+    # No `ports:` on purpose. The app reaches Redis over the compose network
+    # (REDIS_HOST=redis). Publishing 6379 on the host exposed an unauthenticated
+    # Redis: anyone who could reach the machine could read chat history or
+    # write qcache:* entries and make the bot serve arbitrary answers.
     volumes:
       - redis-data:/data
   app:

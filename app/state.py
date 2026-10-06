@@ -13,3 +13,4 @@ class GraphState(TypedDict, total=False):
     is_grounded: bool
     unsupported_claims: List[str]
     classification: str
+    upstream_error: bool

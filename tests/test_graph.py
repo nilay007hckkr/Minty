@@ -245,3 +245,49 @@ def test_cache_key_is_stable_across_processes():
     assert _cache_key("hello") == _cache_key("hello")
     assert _cache_key("hello").startswith("qcache:")
     assert len(_cache_key("hello")) == len("qcache:") + 32
+
+
+# --- Groq outage: stop early instead of amplifying failing calls -------------
+
+@patch("app.nodes.get_grade_chain")
+def test_grade_node_stops_after_double_failure(mock_get_chain):
+    import groq
+    from app.nodes import grade_node
+
+    err = groq.APIConnectionError(request=MagicMock())
+    mock_get_chain.return_value.invoke.side_effect = err
+    docs = [Document(page_content=f"doc {i}", metadata={"source": "a.md"}) for i in range(3)]
+
+    result = grade_node({"query": "q", "documents": docs})
+
+    # 2 attempts on the first doc, then stop: not 2 x 3 docs.
+    assert mock_get_chain.return_value.invoke.call_count == 2
+    assert result["upstream_error"] is True
+    assert result["documents"] == []
+
+
+def test_route_after_grading_upstream_error_skips_refine():
+    state = {"documents": [], "refinement_count": 0, "upstream_error": True}
+    assert route_after_grading(state) == "fallback"
+
+
+@patch("app.nodes.get_generate_chain")
+def test_generate_node_flags_upstream_error(mock_get_chain):
+    import groq
+    from app.nodes import generate_node
+
+    mock_get_chain.return_value.invoke.side_effect = groq.APIConnectionError(
+        request=MagicMock()
+    )
+    result = generate_node({"original_query": "q", "documents": []})
+    assert result["upstream_error"] is True
+
+
+def test_fallback_message_distinguishes_outage_from_unknown():
+    from app.nodes import fallback_node
+
+    outage = fallback_node({"documents": [], "upstream_error": True})["answer"]
+    unknown = fallback_node({"documents": []})["answer"]
+
+    assert "temporarily unable" in outage
+    assert "don't have enough information" in unknown
