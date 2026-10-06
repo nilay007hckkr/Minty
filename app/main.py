@@ -5,6 +5,7 @@ load_dotenv()
 import logging
 import os
 from contextlib import asynccontextmanager
+import redis
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from app.graph import app_graph, RECURSION_LIMIT
@@ -13,6 +14,7 @@ from app.vectorstore import get_vectorstore, index_documents
 from app.history import append_message, get_history
 from app.cache import check_cache, write_cache
 from app.rate_limit import check_rate_limit
+from app.redis_client import redis_client
 from fastapi.staticfiles import StaticFiles
 
 logging.basicConfig(
@@ -43,7 +45,16 @@ class ChatRequest(BaseModel):
 
 @app.get("/health")
 def health_check():
-    return {"status": "ok"}
+    # Redis only backs optional features, so its loss is "degraded", not down.
+    try:
+        redis_client.ping()
+        redis_status = "ok"
+    except redis.RedisError:
+        redis_status = "unavailable"
+    return {
+        "status": "ok" if redis_status == "ok" else "degraded",
+        "redis": redis_status,
+    }
 
 
 @app.post("/chat")
