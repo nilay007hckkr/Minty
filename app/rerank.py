@@ -1,8 +1,15 @@
+from functools import cache
 from typing import List
-from sentence_transformers import CrossEncoder
 from langchain_core.documents import Document
 
-_cross_encoder = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+@cache
+def _get_cross_encoder():
+    # Imported lazily: sentence_transformers pulls in torch, which is slow to
+    # import and not needed by code paths (or tests) that never rerank.
+    from sentence_transformers import CrossEncoder
+
+    return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 
 def rerank_documents(
@@ -12,7 +19,7 @@ def rerank_documents(
         return []
 
     pairs = [[query, doc.page_content] for doc in docs]
-    scores = _cross_encoder.predict(pairs)
+    scores = _get_cross_encoder().predict(pairs)
 
     scored_docs = list(zip(docs, scores))
     scored_docs.sort(key=lambda x: x[1], reverse=True)

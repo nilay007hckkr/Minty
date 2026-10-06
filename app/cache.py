@@ -1,9 +1,8 @@
+import hashlib
 import json
 import numpy as np
-from langchain_huggingface import HuggingFaceEmbeddings
 from app.redis_client import redis_client
-
-_embeddings = HuggingFaceEmbeddings(model_name="sentence-transformers/all-MiniLM-L6-v2")
+from app.vectorstore import get_embeddings
 
 CACHE_PREFIX = "semcache:"
 CACHE_INDEX_KEY = "semcache:index"
@@ -16,8 +15,14 @@ def _cosine_similarity(a, b):
     return float(np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b) + 1e-8))
 
 
+def _cache_key(query: str) -> str:
+    # sha256, not hash(): Python's str hash is randomized per process, so the
+    # same query would get a different key after every restart.
+    return CACHE_PREFIX + hashlib.sha256(query.encode()).hexdigest()[:32]
+
+
 def check_cache(query: str) -> dict | None:
-    query_embedding = _embeddings.embed_query(query)
+    query_embedding = get_embeddings().embed_query(query)
     keys = redis_client.smembers(CACHE_INDEX_KEY)
 
     best_score, best_response = 0.0, None
@@ -37,8 +42,8 @@ def check_cache(query: str) -> dict | None:
 
 
 def write_cache(query: str, response: dict) -> None:
-    query_embedding = _embeddings.embed_query(query)
-    key = f"{CACHE_PREFIX}{abs(hash(query))}"
+    query_embedding = get_embeddings().embed_query(query)
+    key = _cache_key(query)
     payload = json.dumps({"embedding": query_embedding, "response": response})
     redis_client.set(key, payload, ex=CACHE_TTL_SECONDS)
     redis_client.sadd(CACHE_INDEX_KEY, key)

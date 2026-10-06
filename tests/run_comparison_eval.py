@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from app.comparison_graphs import naive_graph, reranked_graph
-from app.graph import app_graph
+from app.graph import app_graph, RECURSION_LIMIT
 
 EVAL_SET_PATH = "tests/eval_set.json"
 
@@ -31,7 +31,7 @@ def run_graph(graph, query: str) -> dict:
         "query": query,
         "refinement_count": 0,
     }
-    result = graph.invoke(initial_state, config={"recursion_limit": 15})
+    result = graph.invoke(initial_state, config={"recursion_limit": RECURSION_LIMIT})
     return {
         "answer": result.get("answer", ""),
         "sources": result.get("sources", []),

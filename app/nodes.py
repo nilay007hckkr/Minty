@@ -1,34 +1,94 @@
 import logging
-import groq
+from functools import cache
 from typing import List
+
+import groq
 from langchain_core.documents import Document
+from langchain_core.exceptions import OutputParserException
 from langchain_core.output_parsers import StrOutputParser
 from langchain_groq import ChatGroq
+from pydantic import ValidationError
 
 from app.state import GraphState
 from app.prompts import (
     classify_prompt,
+    condense_prompt,
     generate_prompt,
     grade_prompt,
     refine_prompt,
+    revise_prompt,
     validate_prompt,
 )
+from app.schemas import GradeDecision, RouteDecision, ValidationResult
 from app.vectorstore import get_vectorstore
 from app.rerank import rerank_documents
 
 logger = logging.getLogger(__name__)
 
-vector_store = get_vectorstore()
-retriever = vector_store.as_retriever(search_kwargs={"k": 6})
+RETRIEVE_K = 6
+# 3 is enough once chunks carry their FAQ heading (see ingestion.py): every
+# answerable eval question's target chunk then reranks #1. Raising this only
+# adds grading calls.
+RERANK_TOP_N = 3
 
-generate_llm = ChatGroq(model="openai/gpt-oss-120b", temperature=0)
-grade_llm = ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+# Upstream API failures, plus a structured response that fails to parse.
+LLM_ERRORS = (groq.GroqError, OutputParserException, ValidationError)
 
-classify_chain = classify_prompt | grade_llm | StrOutputParser()
-generate_chain = generate_prompt | generate_llm | StrOutputParser()
-grade_chain = grade_prompt | grade_llm | StrOutputParser()
-refine_chain = refine_prompt | grade_llm | StrOutputParser()
-validate_chain = validate_prompt | generate_llm | StrOutputParser()
+
+# Clients and chains are built on first use, not at import: importing the
+# graph (e.g. in unit tests or CI) should not need GROQ_API_KEY or load models.
+@cache
+def get_retriever():
+    return get_vectorstore().as_retriever(search_kwargs={"k": RETRIEVE_K})
+
+
+@cache
+def _generate_llm() -> ChatGroq:
+    return ChatGroq(model="openai/gpt-oss-120b", temperature=0)
+
+
+@cache
+def _small_llm() -> ChatGroq:
+    return ChatGroq(model="openai/gpt-oss-20b", temperature=0)
+
+
+def _structured(llm: ChatGroq, schema):
+    return llm.with_structured_output(schema, method="json_schema", strict=True)
+
+
+@cache
+def get_classify_chain():
+    return classify_prompt | _structured(_small_llm(), RouteDecision)
+
+
+@cache
+def get_grade_chain():
+    return grade_prompt | _structured(_small_llm(), GradeDecision)
+
+
+@cache
+def get_refine_chain():
+    return refine_prompt | _small_llm() | StrOutputParser()
+
+
+@cache
+def get_condense_chain():
+    return condense_prompt | _small_llm() | StrOutputParser()
+
+
+@cache
+def get_generate_chain():
+    return generate_prompt | _generate_llm() | StrOutputParser()
+
+
+@cache
+def get_revise_chain():
+    return revise_prompt | _generate_llm() | StrOutputParser()
+
+
+@cache
+def get_validate_chain():
+    return validate_prompt | _structured(_generate_llm(), ValidationResult)
 
 
 def format_docs(docs: List[Document]) -> str:
@@ -41,38 +101,41 @@ def source_of(doc: Document) -> str:
     return doc.metadata.get("source", "sample_data").replace("\\", "/")
 
 
-def first_word(text: str) -> str:
-    """First token of an LLM label, lowercased and stripped of quotes/punctuation,
-    so 'Yes.' -> 'yes' but 'no, though yes-ish' -> 'no'."""
-    words = text.strip().lower().split()
-    return words[0].strip(".,:;!'\"`*") if words else ""
+def format_history(history: list[dict]) -> str:
+    return "\n".join(f"{m['role']}: {m['content']}" for m in history)
 
 
-def final_verdict(analysis: str) -> str:
-    """Reads the verdict from the last non-empty line only, so a 'verdict: yes'
-    quoted mid-reasoning can't count as the final answer."""
-    lines = [l.strip() for l in analysis.strip().lower().splitlines() if l.strip()]
-    if not lines:
-        return "no"
-    return "yes" if lines[-1].strip(".'\"`*") == "verdict: yes" else "no"
+def condense_query(history: list[dict], query: str) -> str:
+    """Rewrites a follow-up ("what about premium accounts?") into a standalone
+    question using recent chat history, so retrieval and the semantic cache
+    see a self-contained query. Returns the query unchanged on failure."""
+    if not history:
+        return query
+    try:
+        standalone = get_condense_chain().invoke(
+            {"history": format_history(history), "query": query}
+        ).strip()
+    except LLM_ERRORS as e:
+        logger.error(f"Query condensation failed. Using raw query. Error: {e}")
+        return query
+    return standalone or query
 
 
 def classify_node(state: GraphState) -> dict:
     query = state.get("original_query", "")
     try:
-        label = first_word(classify_chain.invoke({"query": query}))
-    except groq.GroqError as e:
+        label = get_classify_chain().invoke({"query": query}).label
+    except LLM_ERRORS as e:
         logger.error(f"Classification API failed. Defaulting to in_scope. Error: {e}")
         label = "in_scope"
 
-    classification = "in_scope" if label == "in_scope" else "out_of_scope"
-    return {"classification": classification, "query": query, "refinement_count": 0}
+    return {"classification": label, "query": query, "refinement_count": 0}
 
 
 def retrieve_node(state: GraphState) -> dict:
     query = state.get("query", "")
     try:
-        docs = retriever.invoke(query)
+        docs = get_retriever().invoke(query)
         logger.debug(
             f"Retrieved (vector order): {[d.metadata.get('source') for d in docs]}"
         )
@@ -87,13 +150,13 @@ def rerank_node(state: GraphState) -> dict:
     docs = state.get("documents", [])
 
     try:
-        reranked = rerank_documents(query, docs, top_n=3)
+        reranked = rerank_documents(query, docs, top_n=RERANK_TOP_N)
         logger.debug(
             f"Reranked (cross-encoder order): {[d.metadata.get('source') for d in reranked]}"
         )
     except Exception as e:
         logger.error(f"Reranking failed, falling back to vector order: {e}")
-        reranked = docs[:3]
+        reranked = docs[:RERANK_TOP_N]
 
     return {"documents": reranked}
 
@@ -106,14 +169,14 @@ def grade_node(state: GraphState) -> dict:
     for doc in docs:
         for attempt in range(2):
             try:
-                verdict = first_word(
-                    grade_chain.invoke({"query": query, "context": doc.page_content})
+                decision = get_grade_chain().invoke(
+                    {"query": query, "context": doc.page_content}
                 )
-                logger.debug(f"Grade {doc.metadata.get('source')} -> {verdict}")
-                if verdict == "yes":
+                logger.debug(f"Grade {doc.metadata.get('source')} -> {decision.relevant}")
+                if decision.relevant:
                     filtered_docs.append(doc)
                 break
-            except groq.GroqError as e:
+            except LLM_ERRORS as e:
                 if attempt == 0:
                     logger.warning(
                         f"Grading API error for {doc.metadata.get('source')}. Retrying... Error: {e}"
@@ -133,33 +196,48 @@ def refine_node(state: GraphState) -> dict:
     count = state.get("refinement_count", 0)
 
     try:
-        rewritten_query = refine_chain.invoke(
+        rewritten_query = get_refine_chain().invoke(
             {"original_query": original_query, "query": query}
         ).strip()
         logger.debug(f"Refine Cycle {count + 1}: '{query}' -> '{rewritten_query}'")
-    except groq.GroqError as e:
+    except LLM_ERRORS as e:
         logger.error(
             f"Refinement API failed. Falling back to original query. Error: {e}"
         )
         rewritten_query = query
 
-    return {"query": rewritten_query, "refinement_count": count + 1}
+    return {"query": rewritten_query or query, "refinement_count": count + 1}
 
 
 def generate_node(state: GraphState) -> dict:
     original_query = state.get("original_query", "")
     docs = state.get("documents", [])
     context = format_docs(docs)
+    attempts = state.get("generation_attempts", 0)
+    unsupported = state.get("unsupported_claims") or []
 
     try:
-        answer = generate_chain.invoke(
-            {"original_query": original_query, "context": context}
-        )
-    except groq.GroqError as e:
+        if attempts and unsupported:
+            # Second pass: tell the model exactly which claims the validator
+            # rejected. A plain re-run at temperature 0 would mostly reproduce
+            # the same answer.
+            answer = get_revise_chain().invoke(
+                {
+                    "original_query": original_query,
+                    "context": context,
+                    "answer": state.get("answer", ""),
+                    "unsupported_claims": "\n".join(f"- {c}" for c in unsupported),
+                }
+            )
+        else:
+            answer = get_generate_chain().invoke(
+                {"original_query": original_query, "context": context}
+            )
+    except LLM_ERRORS as e:
         logger.error(f"Generation API failed: {e}")
         answer = "Error: Upstream API failure during generation."
 
-    return {"answer": answer}
+    return {"answer": answer, "generation_attempts": attempts + 1}
 
 
 def validate_node(state: GraphState) -> dict:
@@ -169,15 +247,18 @@ def validate_node(state: GraphState) -> dict:
 
     if answer.startswith("Error:"):
         logger.debug("Bypassing validation due to upstream API error.")
-        return {"is_grounded": "no"}
+        return {"is_grounded": False, "unsupported_claims": []}
 
     try:
-        analysis = validate_chain.invoke({"context": context, "answer": answer})
-        logger.debug(f"Validate Analysis:\n{analysis}")
-        return {"is_grounded": final_verdict(analysis)}
-    except groq.GroqError as e:
+        result = get_validate_chain().invoke({"context": context, "answer": answer})
+    except LLM_ERRORS as e:
         logger.error(f"Validation API failed. Failing closed. Error: {e}")
-        return {"is_grounded": "no"}
+        return {"is_grounded": False, "unsupported_claims": []}
+
+    logger.debug(f"Validation: {result}")
+    # Fail closed if the two fields disagree (grounded=true but claims listed).
+    grounded = result.grounded and not result.unsupported_claims
+    return {"is_grounded": grounded, "unsupported_claims": result.unsupported_claims}
 
 
 def fallback_node(state: GraphState) -> dict:

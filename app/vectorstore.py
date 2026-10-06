@@ -1,41 +1,63 @@
+import logging
+from functools import cache
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from app.ingestion import load_and_chunk
+
+logger = logging.getLogger(__name__)
 
 PERSIST_DIR = "./data/chroma_db"
 COLLECTION_NAME = "banking_faq"
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
+@cache
+def get_embeddings() -> HuggingFaceEmbeddings:
+    # Shared by the vector store and the semantic cache, so the model is
+    # loaded once per process, and only when first needed.
+    return HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
+
+
+@cache
 def get_vectorstore(
     persist_dir: str = PERSIST_DIR,
     collection_name: str = COLLECTION_NAME,
 ) -> Chroma:
-    embeddings = HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
-    )
     return Chroma(
         persist_directory=persist_dir,
         collection_name=collection_name,
-        embedding_function=embeddings,
+        embedding_function=get_embeddings(),
     )
 
 
 def index_documents(vector_store: Chroma, data_dir: str = "sample_data") -> int:
-    existing_count = vector_store._collection.count()
-    if existing_count > 0:
-        print(
-            f"Collection already has {existing_count} vectors — skipping re-index. "
-            f"Delete {PERSIST_DIR} first if you want to rebuild from scratch."
-        )
-        return existing_count
+    """Syncs the collection with data_dir: adds new chunks, deletes stale ones.
+    Chunk ids are content hashes, so an unchanged corpus is a no-op and an
+    edited file or chunking change is picked up without deleting the DB."""
+    # Lazy: langchain_text_splitters' package init imports torch-based
+    # splitters (~30s cold), which only indexing needs.
+    from app.ingestion import load_and_chunk
 
-    chunks = load_and_chunk(data_dir=data_dir)
-    ids = [chunk.metadata["chunk_id"] for chunk in chunks]
-    vector_store.add_documents(documents=chunks, ids=ids)
+    chunks = {c.metadata["chunk_id"]: c for c in load_and_chunk(data_dir=data_dir)}
+    existing = set(vector_store.get(include=[])["ids"])
+
+    stale = existing - chunks.keys()
+    new_ids = [chunk_id for chunk_id in chunks if chunk_id not in existing]
+
+    if stale:
+        vector_store.delete(ids=list(stale))
+    if new_ids:
+        vector_store.add_documents(
+            documents=[chunks[chunk_id] for chunk_id in new_ids], ids=new_ids
+        )
+
+    logger.info(
+        f"Index sync: {len(new_ids)} added, {len(stale)} removed, {len(chunks)} total"
+    )
     return len(chunks)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     vector_store = get_vectorstore()
     index_documents(vector_store)
     print(f"Total vectors in collection: {vector_store._collection.count()}")

@@ -1,5 +1,5 @@
 import hashlib
-from langchain_community.document_loaders import DirectoryLoader, TextLoader
+from pathlib import Path
 from langchain_text_splitters import (
     RecursiveCharacterTextSplitter,
     MarkdownHeaderTextSplitter,
@@ -8,20 +8,16 @@ from langchain_core.documents import Document
 
 
 def load_and_chunk(data_dir: str = "sample_data") -> list[Document]:
-    dir_loader = DirectoryLoader(
-        path=data_dir,
-        glob="*.md",
-        loader_cls=TextLoader,
-        loader_kwargs={"encoding": "utf-8"},
-        show_progress=True,
-    )
-    documents = dir_loader.load()
-
     headers_to_split_on = [
         ("#", "Header 1"),
         ("##", "Header 2"),
     ]
-    md_splitter = MarkdownHeaderTextSplitter(headers_to_split_on=headers_to_split_on)
+    # strip_headers=False keeps the "## What documents do I need...?" line in
+    # the chunk text. With headers stripped, the question a chunk answers only
+    # lived in metadata, invisible to both the embedder and the cross-encoder.
+    md_splitter = MarkdownHeaderTextSplitter(
+        headers_to_split_on=headers_to_split_on, strip_headers=False
+    )
 
     recursive_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
@@ -31,18 +27,22 @@ def load_and_chunk(data_dir: str = "sample_data") -> list[Document]:
 
     all_final_chunks = []
 
-    for doc in documents:
-        header_chunks = md_splitter.split_text(doc.page_content)
+    # sorted() so chunk order (and therefore the index) is deterministic.
+    for path in sorted(Path(data_dir).glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        header_chunks = md_splitter.split_text(text)
 
         for chunk in header_chunks:
-            chunk.metadata.update(doc.metadata)
+            # as_posix() so sources are identical whether indexed on Windows
+            # or in the Linux container.
+            chunk.metadata["source"] = path.as_posix()
 
         final_chunks = recursive_splitter.split_documents(header_chunks)
         all_final_chunks.extend(final_chunks)
 
     for chunk in all_final_chunks:
         chunk.metadata["chunk_id"] = hashlib.sha256(
-            chunk.page_content.encode()
+            f"{chunk.metadata['source']}\n{chunk.page_content}".encode()
         ).hexdigest()[:16]
 
     return all_final_chunks

@@ -48,10 +48,14 @@ Rather than just claim this architecture is better than naive RAG, I built two s
 | System | Score | What actually happens |
 |---|---|---|
 | Naive RAG (retrieve → generate) | 8/12 | Answers all 8 in-scope questions, but confidently answers all 4 out-of-scope questions (e.g. "what's your favorite color") by generating from whatever's nearest in vector space and citing it as a source — has no concept of "nothing here is relevant." |
-| Reranked RAG (+ cross-encoder) | 7/12 | Same 4 scope failures as naive RAG, plus one recall loss: on "how do I open a new checking account" the cut from 6 to 3 candidates drops the relevant chunk, so the answer misses the actual requirements. Reranking changes *which* documents get cited but adds no scope check. |
-| Minty (full pipeline) | 11/12 | Classification rejects all 4 out-of-scope queries before retrieval runs. The one miss is a **false refusal**: see below. |
+| Reranked RAG (+ cross-encoder) | 8/12 | Same 4 scope failures as naive RAG. Reranking changes *which* documents get cited but adds no scope check. |
+| Minty (full pipeline) | 12/12 | Classification rejects all 4 out-of-scope queries before retrieval runs; all 8 in-scope questions answered and validated. |
 
-The one Minty failure is worth being explicit about, because an earlier version of this eval scored it as a pass. `"how do I open a new checking account"` is answerable — `account_opening.md` lists the ID, SSN/ITIN and $50 deposit requirements — but Minty falls back. Tracing the retrieve and rerank steps shows the root cause is **reranker recall**: vector search ranks the "What documents do I need to open a checking account?" chunk 3rd of 6, but the cross-encoder pushes it out of the top 3 (behind the maintenance-fee and ATM-limit chunks). Grading then keeps only the minimum-age chunk, the answer is built from that alone, and the groundedness validator rejects it — partly on a fair basis, partly for being over-literal (it flagged the phrase "new checking account" as unsupported). The same reranker cut explains the reranked baseline's miss on this query. The eval set originally labeled this query `expect: fallback`, which turned a recall failure into a pass; it's now labeled `answerable`. Scores above are from two identical runs; in a third run Minty also falsely refused the ATM-limit question, so the validator is not fully deterministic even at temperature 0.
+Single run, 2026-10-06. **On this eval set the whole gap between Minty and the baselines is scope handling.** All three systems answer the 8 in-scope questions. The grading and validation steps don't show up in these numbers; their value is measured separately (see [Evaluation](#evaluation)).
+
+**How the account-opening failure was fixed (and why it was a chunking bug, not a reranker bug).** An earlier version scored Minty 11/12 and the reranked baseline 7/12. Both missed `"how do I open a new checking account"`. The cross-encoder ranked the chunk listing the ID/SSN/$50 requirements 4th of 6, so the top-3 cut dropped it. The obvious fix would have been raising `top_n`. Inspecting the chunks showed the real cause: `MarkdownHeaderTextSplitter` strips headers by default. So the chunk text never contained its own question ("What documents do I need to open a checking account?"), and that heading lived only in metadata, invisible to both the embedder and the cross-encoder. With headers kept in the chunk text, the target chunk for **every** in-scope eval question ranks #1 in both vector search and reranking. The account-opening chunk went from a cross-encoder score of −7.44 (rank 4) to +5.19 (rank 1). `top_n` stays at 3. The baselines share the same chunks, so the reranked baseline improved too (7 → 8).
+
+The validator was also over-literal: it rejected the paraphrase "new checking account" as unsupported. Its prompt now checks factual claims (amounts, rates, times, eligibility, procedures, defined terms) and not wording. It returns a structured list of unsupported claims, and the generator gets one revision attempt that removes exactly those claims.
 
 Reproduce this yourself: `uv run python -m tests.run_comparison_eval` (runs all three graphs directly, no server needed — makes real Groq calls, roughly 3x the cost of the standard eval since each question runs through all three pipelines).
 
@@ -70,7 +74,8 @@ flowchart TD
     E -->|nothing relevant,<br/>retries exhausted| H
     F --> I{Validate<br/>groundedness}
     I -->|grounded| J([Return Answer + Sources])
-    I -->|not grounded| H
+    I -->|unsupported claims,<br/>first attempt| F
+    I -->|still not grounded| H
     H --> K([Return Fallback Message])
 
     style B fill:#4A5FD6,color:#fff
@@ -80,7 +85,11 @@ flowchart TD
     style J fill:#3FAE5C,color:#fff
 ```
 
-Retry cap on the refine loop: 2 attempts before falling back, enforced both by application logic and a hard `recursion_limit` on the graph itself as a safety net. Every node in this diagram is individually visible as a nested span in LangSmith — see [Observability](#observability).
+Retry caps: 2 query refinements, and 1 revision after a failed validation. The revision only runs when the validator named specific unsupported claims, and the generator is told which ones to remove. Both caps are enforced in the routing logic, with a hard `recursion_limit` (25, worst-case path is 17 steps) on the graph as a safety net.
+
+Classify, grade and validate use Groq's strict `json_schema` structured output (`app/schemas.py`). On gpt-oss this is constrained decoding, so labels can't come back as `"Yes."`, `"in-scope"`, or a verdict buried in free text.
+
+Follow-up questions ("what about premium accounts?") are rewritten into a standalone question from the last 6 chat messages before the cache lookup and the graph run. Every node in this diagram is individually visible as a nested span in LangSmith — see [Observability](#observability).
 
 ## Tech stack
 
@@ -109,7 +118,7 @@ Retry cap on the refine loop: 2 attempts before falling back, enforced both by a
 |---|---|---|
 | Orchestration | LangGraph | Explicit stateful orchestration for the classify→retrieve→grade→**loop back**→generate→validate workflow, including conditional routing and bounded retry loops. |
 | Generation LLM | Groq (`openai/gpt-oss-120b`) | Fast inference, generous free tier for a portfolio-scale demo. |
-| Utility LLM | Groq (`openai/gpt-oss-20b`) | Cheaper/faster model for classify, grade, and refine — these are cheap decisions that don't need the bigger model. |
+| Utility LLM | Groq (`openai/gpt-oss-20b`) | Cheaper/faster model for classify, grade, refine, and follow-up condensation — these are cheap decisions that don't need the bigger model. |
 | Embeddings | `sentence-transformers/all-MiniLM-L6-v2` | Runs locally, no API cost or rate limit — important since embeddings get called on every query and every semantic-cache check. |
 | Reranker | `cross-encoder/ms-marco-MiniLM-L-6-v2` | Cross-encoders score query+document jointly for higher precision than vector similarity alone, used to cut top-6 candidates down to top-3 before grading. |
 | Vector store | Chroma | Local, zero external services, good fit for a demo-scale corpus. |
@@ -118,13 +127,16 @@ Retry cap on the refine loop: 2 attempts before falling back, enforced both by a
 
 ## Features
 
-- [x] Two-stage markdown-aware chunking (header-based splitting, then size-based, preserving Q&A structure and source metadata)
+- [x] Two-stage markdown-aware chunking (header-based splitting, then size-based); each chunk keeps its FAQ question heading in the text, so retrieval matches on it
+- [x] Content-hash index sync on startup: new or edited chunks are added and stale ones removed, with no manual DB deletion
 - [x] Query classification (in-scope vs. out-of-scope) before any retrieval work happens
 - [x] Cross-encoder reranking between retrieval and grading
 - [x] Per-document LLM relevance grading (not a single batch judgment)
 - [x] Query refinement + retry loop on failed retrieval, capped at 2 attempts
-- [x] Post-generation groundedness validation — checks the generated answer's claims against the retrieved sources, not just whether retrieval succeeded
-- [x] Redis-backed chat history (stored, not yet used for multi-turn context), semantic response caching, and per-IP rate limiting
+- [x] Post-generation groundedness validation — checks the generated answer's factual claims against the retrieved sources, with one feedback-driven revision before falling back
+- [x] Structured (strict JSON-schema) outputs for every LLM decision step
+- [x] Multi-turn follow-ups via history-aware query condensation, plus Redis semantic response caching and per-IP rate limiting
+- [x] Lazy initialization: importing the app loads no models and creates no API clients, so the unit tests and CI need no API key
 - [x] Full LangSmith tracing — every graph node visible as a nested span, tagged per session
 - [x] Minimal same-origin HTML chat UI served via FastAPI static mount
 - [x] Dockerized (FastAPI + Redis via Compose)
@@ -138,11 +150,12 @@ Retry cap on the refine loop: 2 attempts before falling back, enforced both by a
 app/
   main.py               FastAPI app: /chat, /health, rate limiting, semantic cache, trace metadata
   state.py              GraphState TypedDict shared across all graph nodes
-  prompts.py             All prompt templates (classify, grade, refine, generate, validate)
+  prompts.py             All prompt templates (classify, grade, refine, generate, revise, validate, condense)
+  schemas.py             Pydantic schemas for structured classify/grade/validate output
   nodes.py               Node implementations + per-node error handling
   graph.py                StateGraph wiring: nodes, edges, conditional routing
   comparison_graphs.py    Naive and reranked-only graph variants for baseline comparison
-  vectorstore.py         Embeddings + Chroma setup, idempotent indexing
+  vectorstore.py         Embeddings + Chroma setup, content-hash index sync
   ingestion.py            Markdown loading + two-stage chunking
   rerank.py               Cross-encoder reranking
   history.py              Redis chat history (RPUSH / LRANGE)
@@ -157,6 +170,7 @@ tests/
   eval_set.json            Hand-built eval questions + expected outcomes
   run_eval.py              Live eval harness (invokes the graph directly, real Groq calls)
   run_comparison_eval.py   Runs eval_set.json directly against naive/reranked/full graphs
+  run_validator_eval.py    Validator catch rate vs false-rejection rate on faithful/corrupted answers
 .github/workflows/
   ci.yml                  pytest + Docker build on push/PR
 Dockerfile
@@ -180,7 +194,7 @@ docker compose up --build
 ```bash
 uv sync
 docker run -d --name minty-redis -p 6379:6379 redis:7-alpine
-uv run python -m app.vectorstore   # optional: the server also indexes on startup if the store is empty
+uv run python -m app.vectorstore   # optional: the server also syncs the index on startup
 uv run uvicorn app.main:app
 ```
 
@@ -219,11 +233,20 @@ This isn't cosmetic — it directly replaces a debugging workflow this project r
 
 ## Evaluation
 
-**11/12** on a hand-built 12-question set covering all four sample FAQ topics plus four deliberately out-of-scope queries (stable across two runs; one additional false refusal seen in a third). See [Baseline comparison](#baseline-comparison) above for how this compares against naive and reranked-only RAG on the same questions.
+**12/12** (single run) on a hand-built 12-question set covering all four sample FAQ topics plus four deliberately out-of-scope queries. See [Baseline comparison](#baseline-comparison) above for how this compares against naive and reranked-only RAG on the same questions. Twelve questions can't detect a small false-refusal rate. An earlier version was nondeterministic across runs, so repeat runs are needed before treating 12/12 as stable.
 
-Two things worth calling out honestly rather than just quoting the number:
+**Validator in isolation** (`tests/run_validator_eval.py`). This tests the self-verification risk: gpt-oss-120b both writes and checks the answer. There are 14 hand-written answers over real KB chunks, 7 faithful (several deliberately paraphrased) and 7 corrupted (wrong amount or time, an invented condition such as "waived for savings holders", an invented requirement such as "proof of address", "fixed" vs "variable" rate). Two runs each:
 
-- The one failure (`"how do I open a new checking account"`) is a false refusal by the groundedness validator — details in [Baseline comparison](#baseline-comparison). This query was previously labeled as an expected fallback, which made the eval report 12/12; that label was wrong.
+| Metric | Result |
+|---|---|
+| Catch rate (corrupted answers flagged) | 14/14 |
+| False rejections (faithful answers flagged) | 0/14 |
+
+That is encouraging but small. The corruptions are single, fairly blatant edits. Subtler errors, such as a correct number attached to the wrong account type, are the next thing to test.
+
+Things worth calling out honestly rather than just quoting the number:
+
+- `"how do I open a new checking account"` used to fail. It was originally labeled as an expected fallback, which made an earlier eval report 12/12 for the wrong reason. After relabeling it scored 11/12, and the root cause turned out to be chunking (see [Baseline comparison](#baseline-comparison)).
 - The eval harness itself had a bug during development: naive substring keyword matching failed on markdown-formatted answers (e.g. `does **not** charge` doesn't literally contain `does not charge`). Fixed by stripping markdown before matching — a good reminder that a "failing" eval result is sometimes a bug in the test, not the system.
 - A second scoring bug of the same kind: gpt-oss emits typographic Unicode (narrow no-break space in `4:00 PM`, non-breaking hyphen in `fee-free`), so correct answers failed plain substring matching. The scorer now NFKC-normalizes text and dashes before matching. Earlier, overly loose keywords (`"6"`, `"PM"`) had been masking this.
 
@@ -233,9 +256,11 @@ Run it yourself: `uv run python -m tests.run_eval` (invokes the graph directly �
 
 - **A 12-question eval set is directionally useful but not statistically rigorous.** It's enough to catch real regressions and demonstrate the corrective-RAG mechanisms working end-to-end, but not enough to make strong quantitative claims (e.g. proper Recall@K/NDCG would need a much larger, labeled query set — a reasonable next step, not attempted here given project scope).
 - **Semantic cache is shared, not session-scoped.** Deliberate: the content is universal factual information (fee schedules, hours), so caching across all users maximizes hit rate. This would be the wrong design the moment the system needed to answer anything account-specific or personalized.
-- **`langchain-community` is being sunset** upstream (loaders are migrating to standalone integration packages). Seen, understood, and deliberately not migrated for a project at this scale.
 - **Generation/validation can be sensitive to unusual query phrasing**, even when the underlying content exists — a vaguely-phrased question can occasionally trip the groundedness validator into declining an answer a more precisely-phrased version would pass.
-- **Reranking trims retrieval to top-3 before grading**, which improves precision but can occasionally cost recall on borderline queries where the correct document doesn't survive the cut from 6 down to 3.
+- **Reranking trims retrieval to top-3 before grading.** With headings in the chunk text, every in-scope eval question's target chunk ranks #1. A question whose answer spans more than 3 FAQ entries would still lose recall.
+- **Follow-up condensation adds one small-model call per turn once a session has history**, including on cache hits, because the standalone question is the cache key.
+- **Rate limiting behind a reverse proxy** needs uvicorn to trust the proxy's `X-Forwarded-For`: set `FORWARDED_ALLOW_IPS` to the proxy's address. Otherwise every client shares the proxy's IP and one limit.
+- **The semantic cache scans every entry** (O(n) Redis reads + cosine per query). Fine at demo scale; a real deployment would need a vector index (Redis Search or Chroma).
 - **LangSmith env var naming caused a real, reproducible bug**: an outdated `LANGCHAIN_*` variable set produced silent `403 Forbidden` errors on trace uploads (app kept working, tracing silently failed); switching to the current `LANGSMITH_*` names fixed uploads, but briefly caused the container to hang on a slow cold start immediately after the change, which looked like a hard failure before a longer wait resolved it. Root-caused with container log inspection rather than assumed fixed or assumed broken.
 
 ## Roadmap
@@ -243,6 +268,7 @@ Run it yourself: `uv run python -m tests.run_eval` (invokes the graph directly �
 - [ ] Expand the eval set (30-50 queries across in-domain/ambiguous/adversarial/unanswerable categories) with proper retrieval metrics (Recall@K, MRR) — would need labeled ground-truth relevance per query, not attempted yet given project scope
 - [ ] GitHub Actions step to also run the live eval harness on a schedule (not every push, given API cost)
 - [ ] Session-aware semantic caching if the assistant ever needs to handle account-specific queries
+- [ ] Harder validator test cases (correct facts attached to the wrong product/account type, multi-claim corruptions)
 - [ ] Considered typed-decision models (e.g. TypeSafe AI's System One Models) as a potential fit for the classify/grade nodes — not integrated given their very recent (Sept 2026) release and lack of production track record
 - [ ] LangSmith-based automated evaluators (currently the eval harness is a standalone script; LangSmith supports running evals as part of the traced pipeline itself)
 
